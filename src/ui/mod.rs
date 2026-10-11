@@ -419,6 +419,8 @@ fn central(app: &mut App, ui: &mut egui::Ui) {
                     dark: palette.dark,
                     strength,
                     opacity,
+                    fade_to_bottom: true,
+                    corner_radius: 0,
                 },
             );
             if dither_art.is_some() && opacity > 0.0 {

@@ -289,10 +289,10 @@ pub fn fullscreen(app: &mut App, ui: &mut egui::Ui) {
     egui::CentralPanel::default()
         .frame(Frame::new().fill(theme::Palette::dark().window))
         .show(ui, |ui| {
-            let rect = ui.max_rect();
+            let rect = backdrop_rect(ui.max_rect());
             background(app, ui, rect);
             let top = theme::titlebar_inset(ui.ctx()) + 24.0;
-            if app.now_playing().is_some() && rect.width() >= COVER_BESIDE_MIN_WIDTH {
+            if app.now_playing().is_some() && ui.max_rect().width() >= COVER_BESIDE_MIN_WIDTH {
                 with_cover(app, ui, rect, top);
                 return;
             }
@@ -302,6 +302,7 @@ pub fn fullscreen(app: &mut App, ui: &mut egui::Ui) {
                 pos2(rect.center().x + width / 2.0, rect.bottom()),
             );
             let mut content = ui.new_child(UiBuilder::new().max_rect(region));
+            content.set_clip_rect(rect);
             fullscreen_header(app, &mut content);
             content.add_space(20.0);
             track_heading(app, &mut content);
@@ -317,6 +318,16 @@ const LYRICS_BESIDE_WIDTH: f32 = 640.0;
 /// ones keep a single column with a small cover in the heading.
 const COVER_BESIDE_MIN_WIDTH: f32 = 900.0;
 
+/// A dark rim gives the cover-derived backdrop its letterboxed frame.
+const BACKDROP_RADIUS: u8 = 24;
+
+fn backdrop_rect(viewport: Rect) -> Rect {
+    viewport.shrink2(vec2(
+        24.0_f32.min(viewport.width().max(0.0) * 0.1),
+        20.0_f32.min(viewport.height().max(0.0) * 0.1),
+    ))
+}
+
 /// Full screen with the cover large: beside the lyrics when there are
 /// words to follow, and alone in the middle when there are none, a calm
 /// view of what is playing.
@@ -326,6 +337,7 @@ fn with_cover(app: &mut App, ui: &mut egui::Ui, rect: Rect, top: f32) {
         pos2(rect.right() - 48.0, rect.bottom() - 40.0),
     );
     let mut header = ui.new_child(UiBuilder::new().max_rect(outer));
+    header.set_clip_rect(rect);
     fullscreen_header(app, &mut header);
     let below = Rect::from_min_max(
         pos2(outer.left(), header.min_rect().bottom() + 24.0),
@@ -353,6 +365,7 @@ fn with_cover(app: &mut App, ui: &mut egui::Ui, rect: Rect, top: f32) {
             pos2(column.right() + gap + lyrics_width, below.bottom()),
         );
         let mut content = ui.new_child(UiBuilder::new().max_rect(lyrics));
+        content.set_clip_rect(rect);
         fullscreen_contents(app, &mut content);
     } else {
         let side = (below.height() - 140.0)
@@ -426,7 +439,7 @@ fn big_cover(app: &App, ui: &mut egui::Ui, column: Rect, align: Align) {
     };
     let side = column.width();
     let cover = Rect::from_min_size(column.min, vec2(side, side));
-    let radius = 10.0;
+    let radius = 16.0;
     ui.painter().add(
         egui::epaint::Shadow {
             offset: [0, 18],
@@ -484,35 +497,22 @@ fn background(app: &mut App, ui: &mut egui::Ui, rect: Rect) {
     let art = app
         .now_playing()
         .and_then(|now| preferred_backdrop_art(now.art_small, now.art_url));
-    let painter = ui.painter().with_clip_rect(rect);
-    if let Some(texture) = app
-        .lyrics_backdrop
-        .texture(ui.ctx(), app.backend.art(), art.as_deref())
-    {
-        painter.image(
-            texture.id(),
-            rect,
-            cover_uv(rect.size(), texture.size_vec2()),
-            Color32::from_gray(180),
-        );
-    }
-    painter.rect_filled(rect, 0.0, Color32::from_black_alpha(120));
-    widgets::paint_vertical_gradient(
+    ui.painter()
+        .rect_filled(rect, BACKDROP_RADIUS, theme::Palette::dark().panel);
+    let loader = app.backend.art().clone();
+    app.lyrics_backdrop.paint(
         ui,
+        &loader,
+        art.as_deref(),
         rect,
-        Color32::from_black_alpha(0),
-        Color32::from_black_alpha(95),
+        crate::dither::Look {
+            dark: true,
+            strength: 0.24,
+            opacity: 1.0,
+            fade_to_bottom: false,
+            corner_radius: BACKDROP_RADIUS,
+        },
     );
-}
-
-fn cover_uv(view: egui::Vec2, image: egui::Vec2) -> Rect {
-    let ratio = (view.x / view.y.max(1.0)) / (image.x / image.y.max(1.0));
-    let size = if ratio > 1.0 {
-        vec2(1.0, 1.0 / ratio)
-    } else {
-        vec2(ratio, 1.0)
-    };
-    Rect::from_center_size(pos2(0.5, 0.5), size)
 }
 
 fn fullscreen_header(app: &mut App, ui: &mut egui::Ui) {
@@ -792,7 +792,27 @@ fn fullscreen_contents(app: &mut App, ui: &mut egui::Ui) {
 
 #[cfg(test)]
 mod tests {
-    use super::{fullscreen_content_width, preferred_backdrop_art};
+    use super::{backdrop_rect, fullscreen_content_width, preferred_backdrop_art};
+
+    #[test]
+    fn the_letterboxed_backdrop_is_inset_and_centred_at_every_size() {
+        for size in [
+            egui::vec2(1600.0, 900.0),
+            egui::vec2(760.0, 650.0),
+            egui::vec2(48.0, 32.0),
+            egui::Vec2::ZERO,
+        ] {
+            let viewport = egui::Rect::from_min_size(egui::pos2(10.0, 20.0), size);
+            let backdrop = backdrop_rect(viewport);
+            assert!(backdrop.width() >= 0.0 && backdrop.height() >= 0.0);
+            assert_eq!(backdrop.center(), viewport.center());
+            assert!(viewport.contains_rect(backdrop));
+            if size.x >= 760.0 {
+                assert_eq!(backdrop.left() - viewport.left(), 24.0);
+                assert_eq!(backdrop.top() - viewport.top(), 20.0);
+            }
+        }
+    }
 
     #[test]
     fn fullscreen_backdrop_prefers_small_art_with_large_art_as_fallback() {

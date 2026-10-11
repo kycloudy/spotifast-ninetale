@@ -412,7 +412,7 @@ pub struct App {
     pub lyrics_fullscreen_seen: bool,
     lyrics_fullscreen_restoring: Option<bool>,
     lyrics_restore_maximized: bool,
-    pub lyrics_backdrop: crate::images::LyricsBackdrop,
+    pub lyrics_backdrop: crate::dither::DitherHero,
     pub softened_covers: crate::images::SoftenedCovers,
     pub dither_hero: crate::dither::DitherHero,
     /// The track the lyrics below are for.
@@ -6331,6 +6331,7 @@ impl App {
             self.retain_table_rows(&page);
             return;
         }
+        self.clear_home_search();
         self.history.truncate(self.history_index + 1);
         self.history.push(page.clone());
         if self.history.len() > 60 {
@@ -6341,6 +6342,17 @@ impl App {
         self.ensure_loaded(page.clone());
         self.retain_table_rows(&page);
         self.evict_stale_pages();
+    }
+
+    /// Home's results belong to that visit. Clearing also cancels pending
+    /// work and invalidates both halves of an answer arriving after leaving.
+    fn clear_home_search(&mut self) {
+        if matches!(self.page(), Page::Home) && self.search.from_home {
+            self.search.query.clear();
+            self.search.from_home = false;
+            self.search.typed_at = None;
+            self.run_search(String::new());
+        }
     }
 
     /// Hands the app a Spotify link from outside, a canonical URI as
@@ -8340,6 +8352,7 @@ impl App {
             }
             Action::Back => {
                 if self.can_go_back() {
+                    self.clear_home_search();
                     self.history_index -= 1;
                     let page = self.page().clone();
                     self.touch_page(&page);
@@ -8350,6 +8363,7 @@ impl App {
             }
             Action::Forward => {
                 if self.can_go_forward() {
+                    self.clear_home_search();
                     self.history_index += 1;
                     let page = self.page().clone();
                     self.touch_page(&page);
@@ -15031,6 +15045,86 @@ mod tests {
             assert!(!app.search.catalogue_pending && !app.search.playlists_pending);
             app.backend.shutdown();
         }
+    }
+
+    #[test]
+    fn leaving_home_clears_search_and_rejects_late_answers_on_return() {
+        let ctx = egui::Context::default();
+        for navigation in 0..3 {
+            let mut app = test_app(&format!("leave-home-search-{navigation}"));
+            let destination = Page::Settings;
+            match navigation {
+                1 => {
+                    app.open(destination.clone());
+                    app.open(Page::Home);
+                }
+                2 => {
+                    app.open(destination.clone());
+                    app.apply(Action::Back, &ctx);
+                }
+                _ => {}
+            }
+            let serial = searching(&mut app, "old");
+            app.search.from_home = true;
+            app.search.results = Loadable::Loaded(catalogue_answer());
+            app.search.playlists = Some((serial, search_page("old")));
+            app.search.typed_at = Some(Instant::now());
+            app.search.error = Some("old failure".into());
+            let action = match navigation {
+                1 => Action::Back,
+                2 => Action::Forward,
+                _ => Action::Open(destination.clone()),
+            };
+            app.apply(action, &ctx);
+            assert_eq!(*app.page(), destination);
+            assert!(app.search.query.is_empty() && app.search.committed.is_empty());
+            assert!(!app.search.from_home);
+            assert!(app.search.typed_at.is_none() && app.search.error.is_none());
+            assert!(app.search.serial > serial);
+            app.open(Page::Home);
+            app.handle_api(ApiResponse::SearchStarted {
+                query: "old".into(),
+                serial,
+                split: true,
+            });
+            app.handle_api(ApiResponse::Search {
+                query: "old".into(),
+                serial,
+                result: Ok(catalogue_answer()),
+            });
+            app.handle_api(ApiResponse::SearchPlaylists {
+                query: "old".into(),
+                serial,
+                result: Ok(search_page("old")),
+            });
+            assert!(matches!(app.search.results, Loadable::NotLoaded));
+            assert!(app.search.playlists.is_none());
+            assert!(!app.search.catalogue_pending && !app.search.playlists_pending);
+            app.backend.shutdown();
+        }
+    }
+
+    #[test]
+    fn staying_on_home_keeps_its_search_and_a_new_global_search_survives_navigation() {
+        let ctx = egui::Context::default();
+        let mut app = test_app("home-search-navigation-scope");
+        let serial = searching(&mut app, "home query");
+        app.search.from_home = true;
+        app.open(Page::Home);
+        app.apply(Action::ToggleSidebar, &ctx);
+        assert_eq!(app.search.query, "home query");
+        assert_eq!(app.search.serial, serial);
+        app.apply(Action::Search("global query".into()), &ctx);
+        assert_eq!(*app.page(), Page::Search);
+        assert_eq!(app.search.query, "global query");
+        assert_eq!(app.search.committed, "global query");
+        assert!(!app.search.from_home);
+        let serial = app.search.serial;
+        app.open(Page::Settings);
+        app.open(Page::Home);
+        assert_eq!(app.search.query, "global query");
+        assert_eq!(app.search.serial, serial);
+        app.backend.shutdown();
     }
 
     fn cover_dialog(request: Option<u64>) -> Dialog {

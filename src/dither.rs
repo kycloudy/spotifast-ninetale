@@ -1,4 +1,4 @@
-//! The dithered artwork behind a page's header.
+//! The dithered artwork behind a page's header or full-screen lyrics.
 //!
 //! The page's cover, or the playing song's art on pages without one, is
 //! drawn as an ordered (Bayer) dither of coloured dots that thin out toward
@@ -105,6 +105,7 @@ struct Key {
     rows: usize,
     dark: bool,
     strength: u8,
+    fade_to_bottom: bool,
 }
 
 /// How far down the header a dot can still appear: all of it at the top,
@@ -128,6 +129,17 @@ pub fn raster(
     rows: usize,
     dark: bool,
     strength: f32,
+) -> ColorImage {
+    raster_with_fade(source, columns, rows, dark, strength, true)
+}
+
+fn raster_with_fade(
+    source: &Source,
+    columns: usize,
+    rows: usize,
+    dark: bool,
+    strength: f32,
+    fade_to_bottom: bool,
 ) -> ColorImage {
     let alpha = (strength.clamp(0.0, 1.0) * 255.0).round() as u8;
     let mut dots = Vec::with_capacity(columns * rows);
@@ -161,7 +173,7 @@ pub fn raster(
     };
     let mut pixels = vec![Color32::TRANSPARENT; columns * rows];
     for row in 0..rows {
-        let fade = fade(row, rows) * thinning;
+        let fade = if fade_to_bottom { fade(row, rows) } else { 1.0 } * thinning;
         for column in 0..columns {
             let (value, color) = dots[row * columns + column];
             let threshold = (BAYER[row % 4][column % 4] as f32 + 0.5) / 16.0;
@@ -200,7 +212,7 @@ pub struct DitherHero {
     shown_at: Option<Instant>,
 }
 
-/// How a header's dither looks.
+/// How a header or lyrics backdrop's dither looks.
 #[derive(Clone, Copy, Debug)]
 pub struct Look {
     /// Whether the theme is dark.
@@ -209,6 +221,10 @@ pub struct Look {
     pub strength: f32,
     /// The whole texture's opacity, which fades it without making it again.
     pub opacity: f32,
+    /// Headers thin out toward the page; backdrops keep dots throughout.
+    pub fade_to_bottom: bool,
+    /// Clips the artwork to the backdrop's rounded frame.
+    pub corner_radius: u8,
 }
 
 impl DitherHero {
@@ -226,6 +242,8 @@ impl DitherHero {
             dark,
             strength,
             opacity,
+            fade_to_bottom,
+            corner_radius,
         } = look;
         let ctx = ui.ctx().clone();
         self.receive(&ctx);
@@ -238,6 +256,7 @@ impl DitherHero {
                 rows,
                 dark,
                 strength: (strength.clamp(0.0, 1.0) * 255.0) as u8,
+                fade_to_bottom,
             };
             self.raster(&ctx, loader, key, strength);
         }
@@ -254,15 +273,24 @@ impl DitherHero {
         if uri.is_none() || opacity <= 0.0 {
             return;
         }
-        let painter = ui.painter_at(rect);
-        let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+        let paint = |texture: &TextureHandle, opacity: f32| {
+            let tint = Color32::WHITE.gamma_multiply(opacity);
+            if corner_radius == 0 {
+                ui.painter_at(rect).image(
+                    texture.id(),
+                    rect,
+                    Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+                    tint,
+                );
+            } else {
+                egui::Image::new((texture.id(), rect.size()))
+                    .tint(tint)
+                    .corner_radius(corner_radius)
+                    .paint_at(ui, rect);
+            }
+        };
         if let Some(previous) = &self.previous {
-            painter.image(
-                previous.id(),
-                rect,
-                uv,
-                Color32::WHITE.gamma_multiply((1.0 - mix) * opacity),
-            );
+            paint(previous, (1.0 - mix) * opacity);
         }
         let Some((key, texture)) = &self.current else {
             return;
@@ -271,12 +299,7 @@ impl DitherHero {
         // is ready, then fades out under it.
         let fresh = Some(key.uri.as_str()) == uri && key.dark == dark;
         let shown = if fresh { mix } else { 1.0 };
-        painter.image(
-            texture.id(),
-            rect,
-            uv,
-            Color32::WHITE.gamma_multiply(shown * opacity),
-        );
+        paint(texture, shown * opacity);
     }
 
     fn receive(&mut self, ctx: &egui::Context) {
@@ -357,7 +380,14 @@ impl DitherHero {
         self.rastering = Some(rx);
         let ctx = ctx.clone();
         loader.spawn_blocking(move || {
-            let image = raster(&source, key.columns, key.rows, key.dark, strength);
+            let image = raster_with_fade(
+                &source,
+                key.columns,
+                key.rows,
+                key.dark,
+                strength,
+                key.fade_to_bottom,
+            );
             let _ = tx.send((key, image));
             ctx.request_repaint();
         });
@@ -374,6 +404,31 @@ mod tests {
 
     fn lit(image: &ColorImage) -> usize {
         image.pixels.iter().filter(|pixel| pixel.a() > 0).count()
+    }
+
+    #[test]
+    fn a_lyrics_backdrop_keeps_cover_coloured_dots_at_the_bottom() {
+        let source = flat([100, 50, 0]);
+        let backdrop = raster_with_fade(&source, 64, 64, true, 0.3, false);
+        let header = raster(&source, 64, 64, true, 0.3);
+        let bottom = |image: &ColorImage| {
+            image.pixels[48 * 64..]
+                .iter()
+                .filter(|pixel| pixel.a() > 0)
+                .count()
+        };
+        assert!(bottom(&backdrop) > 300);
+        assert!(bottom(&header) < bottom(&backdrop) / 10);
+        assert!(
+            backdrop
+                .pixels
+                .iter()
+                .filter(|pixel| pixel.a() > 0)
+                .all(|pixel| {
+                    let [r, g, b, a] = pixel.to_srgba_unmultiplied();
+                    r >= 250 && (125..=132).contains(&g) && b == 0 && a == 77
+                })
+        );
     }
 
     #[test]

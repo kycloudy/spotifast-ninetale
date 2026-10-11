@@ -23,7 +23,7 @@ pub const CONFIG: UpdateConfig = UpdateConfig {
     // carry the key: from then on an unsigned release is refused.
     publisher_key: None,
     ..UpdateConfig::new(
-        "crmne/spotifast",
+        "kycloudy/spotifast-ninetale",
         "Spotifast",
         "spotifast",
         env!("CARGO_PKG_VERSION"),
@@ -43,6 +43,7 @@ mod tests {
     #[test]
     fn update_config_is_valid() {
         CONFIG.validate().unwrap();
+        assert_eq!(CONFIG.repository, "kycloudy/spotifast-ninetale");
         assert_eq!(CONFIG.current_version, env!("CARGO_PKG_VERSION"));
     }
 }

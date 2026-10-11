@@ -11,9 +11,9 @@ use crate::theme::{self, Icon, Palette};
 
 const DEFAULT_ROW_HEIGHT: f32 = 52.0;
 const COMPACT_ROW_HEIGHT: f32 = 32.0;
-/// How far in from the sidebar's edge the Home row's icon starts, and the
-/// wordmark above it.
+/// How far in from the sidebar's edge the Home row's icon starts.
 const NAV_ICON_INSET: f32 = 10.0;
+const LEFT_PADDING: i8 = 12;
 
 struct Entry {
     image: Option<String>,
@@ -551,7 +551,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         .size_range(fit.range.clone())
         .show_separator_line(false)
         .frame(Frame::new().fill(palette.panel).inner_margin(Margin {
-            left: 12,
+            left: LEFT_PADDING,
             right: 8,
             top,
             bottom: if expanded_art { 0 } else { 8 },
@@ -895,11 +895,9 @@ fn contents(app: &mut App, ui: &mut egui::Ui, grid_art: Option<Rect>) {
     let palette = app.palette;
     let page = app.page().clone();
     let locale = app.locale;
-    // Search for all of Spotify, where Zeron keeps its file search. Home
-    // searches in its own box, so there the field's place holds the Ninetale
-    // wordmark instead, lined up with the Home row's icon, and the rows
-    // below keep their places from page to page.
-    if page == Page::Home {
+    // The toggle stays at the top left when the sidebar closes. Home's
+    // wordmark, or the global search on other pages, sits beside it.
+    {
         let (slot, _) = ui.allocate_exact_size(
             vec2(ui.available_width(), super::widgets::SEARCH_FIELD_HEIGHT),
             Sense::hover(),
@@ -909,11 +907,15 @@ fn contents(app: &mut App, ui: &mut egui::Ui, grid_art: Option<Rect>) {
                 .max_rect(slot)
                 .layout(Layout::left_to_right(Align::Center)),
         );
-        slot.add_space(NAV_ICON_INSET);
-        super::logo::show(&mut slot, &palette);
-    } else {
-        let width = ui.available_width() - 4.0;
-        super::topbar::global_search(app, ui, width, &gettext(locale, "Search"));
+        slot.spacing_mut().item_spacing.x = 8.0;
+        slot.add_space(super::topbar::SIDEBAR_TOGGLE_LEFT - f32::from(LEFT_PADDING));
+        super::topbar::sidebar_toggle(app, &mut slot);
+        if page == Page::Home {
+            super::logo::show(&mut slot, &palette);
+        } else {
+            let width = (slot.available_width() - 4.0).max(0.0);
+            super::topbar::global_search(app, &mut slot, width, &gettext(locale, "Search"));
+        }
     }
     ui.add_space(6.0);
     if nav_row(
@@ -946,21 +948,6 @@ fn contents(app: &mut App, ui: &mut egui::Ui, grid_art: Option<Rect>) {
         ui.add_space(2.0);
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
-            if theme::icon_button(
-                ui,
-                Icon::PanelLeft,
-                16.0,
-                palette.secondary,
-                palette.text,
-                super::keys::platform_shortcut(
-                    &gettext(locale, "Hide sidebar (Ctrl+B)"),
-                    &gettext(locale, "Hide sidebar (Cmd+B)"),
-                ),
-            )
-            .clicked()
-            {
-                app.actions.push(Action::ToggleSidebar);
-            }
             let grid = app.settings.sidebar_grid;
             let (icon, label) = if grid {
                 (Icon::LayoutList, gettext(locale, "Show as list"))

@@ -2930,6 +2930,77 @@ mod tests {
         app.backend.shutdown();
     }
 
+    #[test]
+    fn sidebar_toggle_keeps_the_same_bounds_when_hidden_and_reopened() {
+        use egui::accesskit::{Action as AccessibleAction, Role};
+        for width in [760.0, 1280.0] {
+            for light in [false, true] {
+                for page in [Page::Home, Page::Playlist("pl1".into())] {
+                    let (ctx, mut app) = accessible_app("sidebar-toggle-position");
+                    app.open(page);
+                    if light {
+                        app.settings.theme = crate::settings::ThemeChoice::Light;
+                        app.actions.push(Action::SettingsChanged);
+                    }
+                    let mut draw = |events| {
+                        let mut output = ctx.run_ui(
+                            egui::RawInput {
+                                screen_rect: Some(egui::Rect::from_min_size(
+                                    egui::Pos2::ZERO,
+                                    egui::vec2(width, 800.0),
+                                )),
+                                events,
+                                ..Default::default()
+                            },
+                            |ui| app.frame_ui(ui),
+                        );
+                        output.textures_delta.clear();
+                        output
+                            .platform_output
+                            .accesskit_update
+                            .expect("screen-reader tree")
+                    };
+                    let toggle = |tree: &egui::accesskit::TreeUpdate, prefix: &str| {
+                        let mut buttons = tree.nodes.iter().filter(|(_, node)| {
+                            node.role() == Role::Button
+                                && node.label().is_some_and(|label| label.starts_with(prefix))
+                        });
+                        let (id, node) = buttons.next().expect("the sidebar toggle");
+                        assert!(buttons.next().is_none(), "one sidebar toggle");
+                        (*id, node.bounds().expect("toggle bounds"))
+                    };
+                    draw(vec![]);
+                    let tree = draw(vec![]);
+                    let (hide, original) = toggle(&tree, "Hide sidebar");
+                    assert_eq!(original.x0, 16.0, "the top-left control");
+                    let home = accessible_node(&tree, "Home", Role::Button);
+                    let home = tree
+                        .nodes
+                        .iter()
+                        .find(|(id, _)| *id == home)
+                        .unwrap()
+                        .1
+                        .bounds()
+                        .unwrap();
+                    assert_eq!(
+                        (original.x0 + original.x1) / 2.0,
+                        home.x0 + 18.0,
+                        "the toggle icon lines up with the Home row's icon"
+                    );
+                    draw(vec![accessible_action(hide, AccessibleAction::Click, None)]);
+                    let tree = draw(vec![]);
+                    let (show, hidden) = toggle(&tree, "Show sidebar");
+                    assert_eq!(hidden, original, "closed at {width}, light {light}");
+                    draw(vec![accessible_action(show, AccessibleAction::Click, None)]);
+                    let tree = draw(vec![]);
+                    let (_, reopened) = toggle(&tree, "Hide sidebar");
+                    assert_eq!(reopened, original, "reopened at {width}, light {light}");
+                    app.backend.shutdown();
+                }
+            }
+        }
+    }
+
     /// A click on Home's greeting opens it for editing: Enter keeps the new
     /// words, Escape drops an edit, and a blank greeting goes back to the
     /// one by time of day.
@@ -6288,6 +6359,49 @@ mod tests {
                 assert!((detail.center().x - 800.0).abs() < 2.0, "{detail:?}");
             }
             app.backend.shutdown();
+        }
+    }
+
+    #[cfg(feature = "demo")]
+    #[test]
+    fn fullscreen_lyrics_keep_a_rounded_dark_frame_in_both_themes_and_sizes() {
+        for light in [false, true] {
+            for width in [760.0, 1600.0] {
+                let (ctx, mut app) = accessible_app("lyrics-letterbox");
+                apply_flags(&mut app, None, Some("lyrics-fullscreen-view"));
+                if light {
+                    apply_flags(&mut app, None, Some("light"));
+                }
+                let mut output = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(width, 900.0),
+                        )),
+                        ..Default::default()
+                    },
+                    |ui| app.frame_ui(ui),
+                );
+                output.textures_delta.clear();
+                let frame = output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Rect(rect)
+                            if rect.fill == crate::theme::Palette::dark().panel
+                                && rect.corner_radius == egui::CornerRadius::same(24) =>
+                        {
+                            Some(rect.rect)
+                        }
+                        _ => None,
+                    })
+                    .expect("the rounded lyrics backdrop is drawn");
+                assert_eq!(frame.left(), 24.0);
+                assert_eq!(frame.right(), width - 24.0);
+                assert_eq!(frame.top(), 20.0);
+                assert!(frame.bottom() < 880.0, "the player bar has its own space");
+                app.backend.shutdown();
+            }
         }
     }
 

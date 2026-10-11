@@ -5,6 +5,17 @@ description: Play music, arrange playlists, find lyrics, and make Spotifast your
 nav_order: 3
 ---
 
+## Navigation and Home search
+
+Hide the sidebar with the button at the top left beside the wordmark, or
+press `Ctrl+B` (`Cmd+B` on macOS). The button to show it again stays in the
+same position.
+
+Home's search box shows results in place of its shelves. Leaving Home clears
+that query and its results, including a search still loading. Returning with
+the Home button, Back, or Forward shows the shelves and an empty search box.
+Searches started in the global search field keep their existing behavior.
+
 ## Middle-click autoscroll
 
 On Windows, since 0.8.0, and on Linux once turned on, middle-click a scrolling
@@ -515,6 +526,9 @@ hand pauses following; choose **Follow** to resume. Since 0.11.0, a wide
 window shows the song's cover beside the lyrics, the two centred together,
 and a song without words, such as an instrumental, shows just its cover in
 the middle of the screen.
+The background uses the playing song's cover as a field of dithered dots,
+inside a rounded frame with dark margins for a letterboxed look. The cover
+itself also has rounded corners. Lyrics keep this dark backdrop in either theme.
 Since 0.10.0, quitting while lyrics are full screen no longer leaves
 the next launch stuck in full screen: the window returns to its previous size.
 

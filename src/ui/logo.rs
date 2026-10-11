@@ -25,6 +25,28 @@ pub const HEIGHT: f32 = 20.0;
 const FRAMES: usize = 24;
 const FRAME_SECONDS: f64 = 0.08;
 
+/// Only time spent focused advances the wordmark. Playback and artwork
+/// can still repaint an unfocused window without moving its dots.
+#[derive(Clone, Default)]
+struct Animation {
+    elapsed: f64,
+    last_focused: Option<f64>,
+}
+
+impl Animation {
+    fn step(&mut self, time: f64, focused: bool) -> f64 {
+        if focused {
+            if let Some(last) = self.last_focused {
+                self.elapsed += (time - last).max(0.0);
+            }
+            self.last_focused = Some(time);
+        } else {
+            self.last_focused = None;
+        }
+        self.elapsed / FRAME_SECONDS
+    }
+}
+
 const BAYER: [[u8; 4]; 4] = [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]];
 /// Each screen pixel is judged from this many samples a side.
 const SUBSAMPLES: usize = 4;
@@ -192,8 +214,16 @@ pub fn show(ui: &mut egui::Ui, palette: &Palette) -> egui::Response {
                 .data_mut(|data| data.insert_temp(id, (rows, textures.clone())));
             textures
         });
-    let (time, focused) = ui.input(|input| (input.time, input.focused));
-    let step = time / FRAME_SECONDS;
+    let (time, focused) = ui.input(|input| {
+        (
+            input.time,
+            input.viewport().focused.unwrap_or(input.focused),
+        )
+    });
+    let step = ui.ctx().data_mut(|data| {
+        data.get_temp_mut_or_default::<Animation>(id.with("animation"))
+            .step(time, focused)
+    });
     let texture = &textures[step as usize % FRAMES];
     if focused {
         let next = (step.floor() + 1.0 - step) * FRAME_SECONDS;
@@ -214,6 +244,54 @@ pub fn show(ui: &mut egui::Ui, palette: &Palette) -> egui::Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn background_redraws_hold_the_frame_and_focus_resumes_it() {
+        let mut animation = Animation::default();
+        assert_eq!(animation.step(10.0, true), 0.0);
+        let playing = animation.step(10.2, true);
+        assert!((playing - 2.5).abs() < 1e-10);
+        for time in [10.3, 12.0, 120.0] {
+            assert_eq!(animation.step(time, false), playing);
+        }
+        assert_eq!(animation.step(130.0, true), playing);
+        assert!((animation.step(130.08, true) - playing - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn viewport_focus_holds_the_drawn_texture_during_other_repaints() {
+        let ctx = egui::Context::default();
+        let draw = |time, focused| {
+            let mut input = egui::RawInput {
+                time: Some(time),
+                ..Default::default()
+            };
+            input
+                .viewports
+                .get_mut(&egui::ViewportId::ROOT)
+                .unwrap()
+                .focused = Some(focused);
+            let mut output = ctx.run_ui(input, |ui| {
+                show(ui, &Palette::dark());
+            });
+            output.textures_delta.clear();
+            output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Mesh(mesh) => Some(mesh.texture_id),
+                    _ => None,
+                })
+                .expect("the wordmark's texture is drawn")
+        };
+        let first = draw(0.0, true);
+        let advanced = draw(0.2, true);
+        assert_ne!(first, advanced);
+        assert_eq!(draw(1.0, false), advanced);
+        assert_eq!(draw(2.0, false), advanced);
+        assert_eq!(draw(30.0, true), advanced);
+        assert_ne!(draw(30.08, true), advanced);
+    }
 
     fn lit(image: &ColorImage) -> usize {
         image.pixels.iter().filter(|pixel| pixel.a() > 0).count()

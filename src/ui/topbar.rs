@@ -289,6 +289,41 @@ pub(crate) fn global_search(app: &mut App, ui: &mut egui::Ui, width: f32, hint: 
     }
 }
 
+/// Centres the toggle's icon on the sidebar Home row's icon.
+pub(crate) const SIDEBAR_TOGGLE_LEFT: f32 = 16.0;
+
+/// The same control and window position whether the sidebar is open or shut.
+pub(crate) fn sidebar_toggle(app: &mut App, ui: &mut egui::Ui) -> egui::Response {
+    let (_, slot) = ui.allocate_space(Vec2::splat(NAV_SIZE));
+    let center_y = ui.ctx().content_rect().top()
+        + theme::titlebar_inset(ui.ctx())
+        + theme::TOP_BAR_HEIGHT / 2.0;
+    let rect = egui::Rect::from_center_size(pos2(slot.center().x, center_y), Vec2::splat(NAV_SIZE));
+    let mut button = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+    let (windows, mac) = if app.settings.sidebar_visible {
+        (
+            gettext(app.locale, "Hide sidebar (Ctrl+B)"),
+            gettext(app.locale, "Hide sidebar (Cmd+B)"),
+        )
+    } else {
+        (
+            gettext(app.locale, "Show sidebar (Ctrl+B)"),
+            gettext(app.locale, "Show sidebar (Cmd+B)"),
+        )
+    };
+    let response = nav_button(
+        &mut button,
+        &app.palette,
+        Icon::PanelLeft,
+        true,
+        super::keys::platform_shortcut(&windows, &mac),
+    );
+    if response.clicked() {
+        app.actions.push(Action::ToggleSidebar);
+    }
+    response
+}
+
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let palette = app.palette;
     let locale = app.locale;
@@ -317,23 +352,14 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         vec2(width, content_height),
         Layout::left_to_right(Align::Center),
         |ui| {
-            ui.add_space(super::widgets::PAGE_PADDING);
+            ui.add_space(if app.settings.sidebar_visible {
+                super::widgets::PAGE_PADDING
+            } else {
+                SIDEBAR_TOGGLE_LEFT
+            });
             ui.spacing_mut().item_spacing.x = ITEM_SPACING;
             if !app.settings.sidebar_visible {
-                if nav_button(
-                    ui,
-                    &palette,
-                    Icon::PanelLeft,
-                    true,
-                    super::keys::platform_shortcut(
-                        &gettext(locale, "Show sidebar (Ctrl+B)"),
-                        &gettext(locale, "Show sidebar (Cmd+B)"),
-                    ),
-                )
-                .clicked()
-                {
-                    app.actions.push(Action::ToggleSidebar);
-                }
+                sidebar_toggle(app, ui);
                 ui.add_space(2.0);
             }
             if !app.settings.sidebar_visible
