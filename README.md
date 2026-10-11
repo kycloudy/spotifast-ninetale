@@ -5,4 +5,4 @@
 
 **[Download the latest release](https://github.com/kycloudy/spotifast-ninetale/releases/latest)**
 
-Based on Spotifast by Carmine Paolino. [MIT license](LICENSE).
+Based on Spotifast by Carmine Paolino. [MIT license](LICENSE). Inspiration by Zeron by Zeronsh [MIT license](https://github.com/zeronsh/zeron/blob/main/LICENSE)
