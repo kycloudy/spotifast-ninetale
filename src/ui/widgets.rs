@@ -13,6 +13,8 @@ use crate::theme::{self, Icon, Palette};
 use crate::util;
 
 pub const CARD_WIDTH: f32 = 172.0;
+/// The cover inside a card, within its 12 point padding.
+pub const CARD_ART: f32 = CARD_WIDTH - 24.0;
 pub const CARD_GAP: f32 = 14.0;
 pub const PAGE_PADDING: f32 = 24.0;
 
@@ -77,12 +79,14 @@ pub(super) fn paint_cover_with_thumbnail(
         return;
     }
     let corner = CornerRadius::same(radius.min(127.0) as u8);
-    let loaded = sources
-        .requested
-        .is_some_and(|url| paint_cover_url(ui, url, rect, corner, art, false))
-        || sources
-            .previous
-            .is_some_and(|url| paint_ready_cover_url(ui, url, rect, corner, art))
+    let at = |url| CoverAt { url, rect, corner };
+    // A copy at this size, or while it is made, the nearest copy of the
+    // same artwork already on the GPU.
+    let loaded = sources.requested.is_some_and(|url| {
+        paint_cover_url(ui, at(url), art, false) || paint_nearest_copy(ui, at(url), art)
+    }) || sources
+        .previous
+        .is_some_and(|url| paint_ready_cover_url(ui, at(url), art))
         || sources.softened.is_some_and(|texture| {
             paint_cover_texture(
                 ui,
@@ -93,9 +97,9 @@ pub(super) fn paint_cover_with_thumbnail(
             );
             true
         })
-        || sources.thumbnail.is_some_and(|url| {
-            paint_cover_url(ui, url, rect, corner, art, sources.align_thumbnail)
-        });
+        || sources
+            .thumbnail
+            .is_some_and(|url| paint_cover_url(ui, at(url), art, sources.align_thumbnail));
     if !loaded {
         let painter = ui.painter();
         let fill = if palette.dark {
@@ -113,39 +117,164 @@ pub(super) fn paint_cover_with_thumbnail(
     }
 }
 
-fn paint_ready_cover_url(
-    ui: &Ui,
-    url: &str,
+/// A cover to paint: its artwork, where it goes, and its corners.
+#[derive(Clone, Copy)]
+struct CoverAt<'a> {
+    url: &'a str,
     rect: Rect,
     corner: CornerRadius,
-    art: Option<&crate::images::ArtLoader>,
-) -> bool {
-    art.is_some_and(|art| art.is_ready(url)) && paint_cover_url(ui, url, rect, corner, art, false)
 }
 
+/// Paints `cover`'s artwork only if it needs no wait on the network: a
+/// copy made from bytes already loaded, or one already on the GPU.
+fn paint_ready_cover_url(
+    ui: &Ui,
+    cover: CoverAt<'_>,
+    art: Option<&crate::images::ArtLoader>,
+) -> bool {
+    art.is_some_and(|art| art.is_ready(cover.url)) && paint_cover_url(ui, cover, art, false)
+        || paint_nearest_copy(ui, cover, art)
+}
+
+/// The size of the copy of a cover drawn at `rect`.
+fn cover_copy_pixels(ui: &Ui, rect: Rect) -> u32 {
+    crate::images::cover_pixels(rect.width().max(rect.height()) * ui.ctx().pixels_per_point())
+}
+
+/// Paints the copy of `cover`'s artwork already on the GPU that is nearest
+/// the size it is drawn at, without asking for one to be made. The artwork
+/// loader's bytes may be on their way back from the disk for another size
+/// meanwhile; the copy is the texture egui already holds.
+fn paint_nearest_copy(ui: &Ui, cover: CoverAt<'_>, art: Option<&crate::images::ArtLoader>) -> bool {
+    let Some(art) = art else {
+        return false;
+    };
+    let Some(uri) = art.nearest_copy(cover.url, cover_copy_pixels(ui, cover.rect)) else {
+        return false;
+    };
+    let image = egui::Image::new(uri.as_str())
+        .texture_options(crate::images::COVER_TEXTURE)
+        .show_loading_spinner(false);
+    let Ok(egui::load::TexturePoll::Ready { texture }) =
+        image.load_for_size(ui.ctx(), cover.rect.size())
+    else {
+        return false;
+    };
+    art.touch(cover.url);
+    let [width, height] = [texture.size.x, texture.size.y].map(|side| side.round() as usize);
+    art.note_texture(cover.url, &uri, width, height);
+    paint_cover_texture(ui, texture, cover.rect, cover.corner, false);
+    true
+}
+
+/// How long after it was last the playing song's the last song's cover may
+/// stand in for the next one's: long enough for a cover to load, short enough
+/// that one which cannot be had, or a song after a gap, shows the placeholder.
+const PLAYING_COVER_HOLD: f64 = 2.0;
+
+/// The playing song's cover last shown whole in one place, and the input
+/// time it was last the one asked for there.
+#[derive(Clone)]
+struct ShownCover {
+    url: std::sync::Arc<str>,
+    seen: f64,
+}
+
+/// The cover that stands in for `url`'s while it loads: the last one shown,
+/// if it was another song's and it was the one asked for a moment ago.
+fn stand_in(
+    shown: Option<&ShownCover>,
+    url: Option<&str>,
+    now: f64,
+) -> Option<std::sync::Arc<str>> {
+    let shown = shown?;
+    (url.is_some_and(|url| *shown.url != *url) && now - shown.seen < PLAYING_COVER_HOLD)
+        .then(|| std::sync::Arc::clone(&shown.url))
+}
+
+/// Paints the playing song's cover. A new song's cover still being made
+/// keeps the last song's in its place for a moment, so a change of song
+/// does not pass through the placeholder. `key` tells apart the places that
+/// show it.
+pub fn playing_cover(
+    ui: &Ui,
+    palette: &Palette,
+    art: &crate::images::ArtLoader,
+    key: &str,
+    url: Option<&str>,
+    rect: Rect,
+    radius: f32,
+) {
+    let id = egui::Id::new(("playing-cover", key));
+    let now = ui.input(|input| input.time);
+    let shown = ui.ctx().data(|data| data.get_temp::<ShownCover>(id));
+    let previous = stand_in(shown.as_ref(), url, now);
+    paint_cover_with_thumbnail(
+        ui,
+        palette,
+        CoverSources {
+            requested: url,
+            previous: previous.as_deref(),
+            ..Default::default()
+        },
+        rect,
+        radius,
+        Icon::Music,
+        Some(art),
+    );
+    // Remembered while its own cover has a copy, from the frame it shows.
+    if let Some(url) = url
+        && art.has_copy(url)
+    {
+        let url = match shown {
+            Some(shown) if *shown.url == *url => shown.url,
+            _ => std::sync::Arc::from(url),
+        };
+        ui.ctx()
+            .data_mut(|data| data.insert_temp(id, ShownCover { url, seen: now }));
+    }
+}
+
+/// Paints `cover`'s artwork from a copy scaled on the CPU to the pixels it
+/// covers, so the GPU holds no more than the screen shows and fine detail
+/// survives. Artwork that is not fetched over the network is drawn as it is.
 fn paint_cover_url(
     ui: &Ui,
-    url: &str,
-    rect: Rect,
-    corner: CornerRadius,
+    cover: CoverAt<'_>,
     art: Option<&crate::images::ArtLoader>,
     shift_thumbnail: bool,
 ) -> bool {
+    let CoverAt { url, rect, corner } = cover;
     if let Some(art) = art {
         art.touch(url);
     }
-    let image = egui::Image::new(url).show_loading_spinner(false);
+    let scaled = (url.starts_with("https://") || url.starts_with("http://"))
+        .then(|| crate::images::scaled_uri(url, cover_copy_pixels(ui, rect)));
+    let uri = scaled.as_deref().unwrap_or(url);
+    let image = egui::Image::new(uri)
+        .texture_options(crate::images::COVER_TEXTURE)
+        .show_loading_spinner(false);
     let Ok(egui::load::TexturePoll::Ready { texture }) = image.load_for_size(ui.ctx(), rect.size())
     else {
         return false;
     };
-    if let Some(art) = art {
-        art.release_bytes(url);
-        art.note_decoded(
-            url,
-            texture.size.x.round() as usize,
-            texture.size.y.round() as usize,
-        );
+    match art {
+        Some(art) => {
+            let [width, height] =
+                [texture.size.x, texture.size.y].map(|side| side.round() as usize);
+            // Only on the frame this copy's texture first appears: the same
+            // artwork can be wanted at another size, a row's and a page
+            // header's, and releasing the bytes on every frame of the one
+            // already made would snatch them from the other each time they
+            // came back from the disk, so it never got made.
+            if art.note_texture(url, uri, width, height) {
+                art.release_bytes(url);
+                crate::images::forget_decoded(ui.ctx(), uri);
+            }
+        }
+        // Nothing tracks this cover's copies, so let go of the decoded one
+        // as soon as egui holds the texture.
+        None => crate::images::forget_decoded(ui.ctx(), uri),
     }
     paint_cover_texture(ui, texture, rect, corner, shift_thumbnail);
     true
@@ -547,6 +676,7 @@ pub fn picked_menu(
     ui: &mut Ui,
     app: &mut App,
     songs: &[PlayableItem],
+    positions: &[u32],
     editable_playlist: Option<&(String, Option<String>)>,
 ) {
     let palette = app.palette;
@@ -575,6 +705,17 @@ pub fn picked_menu(
     });
     ui.add_space(4.0);
     menu_separator(ui, &palette);
+    if menu_item_enabled(
+        ui,
+        &palette,
+        Some(Icon::SkipForward),
+        &gettext(locale, "Play next"),
+        app.queue_locally_reorderable(),
+    ) {
+        app.actions.push(Action::PlayNext {
+            items: songs.to_vec(),
+        });
+    }
     if menu_item(
         ui,
         &palette,
@@ -604,9 +745,9 @@ pub fn picked_menu(
             saved: !all_saved,
         });
     }
-    // Removal is URI-based, so one entry covers the whole selection on
-    // both the unsorted context and a sorted or filtered view. The caller
-    // only passes a playlist when every picked row shares it.
+    // One entry covers the whole selection on both the unsorted context and
+    // a sorted or filtered view. The caller only passes a playlist when
+    // every picked row shares it.
     if let Some((playlist_id, _)) = editable_playlist
         && menu_item(
             ui,
@@ -618,6 +759,7 @@ pub fn picked_menu(
         app.actions.push(Action::RemoveFromPlaylist {
             playlist_id: playlist_id.clone(),
             uris: uris.clone(),
+            positions: positions.to_vec(),
         });
     }
     add_to_playlist_menu(ui, app, songs);
@@ -802,12 +944,36 @@ pub fn item_menu(
     context: Option<&RowContext>,
     index: Option<usize>,
 ) {
+    item_menu_at(ui, app, item, context, index, None);
+}
+
+/// [`item_menu`] for a playlist row at `position`, so removing it removes
+/// that copy of a song the list holds more than once.
+fn item_menu_at(
+    ui: &mut Ui,
+    app: &mut App,
+    item: &PlayableItem,
+    context: Option<&RowContext>,
+    index: Option<usize>,
+    position: Option<u32>,
+) {
     let palette = app.palette;
     let locale = app.locale;
     ui.set_min_width(220.0);
     ui.set_max_width(300.0);
     let uri = item.uri().to_string();
     let label = item.name().to_string();
+    if menu_item_enabled(
+        ui,
+        &palette,
+        Some(Icon::SkipForward),
+        &gettext(locale, "Play next"),
+        app.queue_locally_reorderable(),
+    ) {
+        app.actions.push(Action::PlayNext {
+            items: vec![item.clone()],
+        });
+    }
     if menu_item(
         ui,
         &palette,
@@ -817,6 +983,21 @@ pub fn item_menu(
         app.actions.push(Action::AddToQueue {
             uri: uri.clone(),
             label: label.clone(),
+        });
+    }
+    // Only a song the user queued, and only on this computer's queue: the
+    // context's rows play themselves, and no other queue can be rewritten.
+    if let (Some(RowContext::Queue), Some(index)) = (context, index)
+        && app.can_remove_from_queue(index)
+        && menu_item(
+            ui,
+            &palette,
+            Some(Icon::Minus),
+            &gettext(locale, "Remove from queue"),
+        )
+    {
+        app.actions.push(Action::RemoveFromQueue {
+            rows: vec![(index, uri.clone())],
         });
     }
     if item.is_track() {
@@ -841,8 +1022,8 @@ pub fn item_menu(
     ) {
         app.actions.push(Action::ToggleSaved(uri.clone()));
     }
-    // Removal is URI-based, so it stays available on a sorted or
-    // filtered view. Moves are positional, so they stay on the unsorted
+    // Removal names the row's song and position, so it stays available on
+    // a sorted or filtered view. Moves are positional, so they stay on the unsorted
     // context only, where screen positions match server positions.
     let editable = match context {
         Some(RowContext::Context {
@@ -893,6 +1074,31 @@ pub fn item_menu(
             app.actions.push(Action::RemoveFromPlaylist {
                 playlist_id: playlist_id.clone(),
                 uris: vec![uri.clone()],
+                positions: position.into_iter().collect(),
+            });
+        }
+    }
+    // Spotify's own mixes hide a song for this listener without removing
+    // it from anyone's copy (#779).
+    let hide_in = match context {
+        Some(RowContext::Context { uri, .. }) => Some(uri),
+        Some(RowContext::View { context_uri, .. }) => Some(context_uri),
+        _ => None,
+    }
+    .filter(|playlist| item.is_track() && app.can_hide_in(playlist))
+    .cloned();
+    if let Some(playlist_uri) = hide_in {
+        let hidden = app.hidden_in(&playlist_uri, &uri);
+        let (icon, text) = if hidden {
+            (Icon::Eye, gettext(locale, "Show in this playlist"))
+        } else {
+            (Icon::EyeOff, gettext(locale, "Hide in this playlist"))
+        };
+        if menu_item(ui, &palette, Some(icon), &text) {
+            app.actions.push(Action::SetHiddenInPlaylist {
+                playlist_uri,
+                track_uri: uri.clone(),
+                hidden: !hidden,
             });
         }
     }
@@ -1117,6 +1323,9 @@ pub struct TrackRow<'a> {
     /// Who put the song here, on playlists made together.
     pub added_by: Option<&'a str>,
     pub show_added_by: bool,
+    /// Spotify's play count for the song, on album pages and an artist's
+    /// popular songs once the counts arrived.
+    pub show_plays: bool,
     pub compact: bool,
     /// One line for the name and the artists in a shorter row without the
     /// cover: the compact track list. `compact` stays the queue's narrow row.
@@ -1130,6 +1339,11 @@ pub struct TrackRow<'a> {
     /// the menu can update a destination playlist before Spotify answers.
     /// Empty where a list does not offer picking.
     pub picked_songs: &'a [PlayableItem],
+    /// The playlist position of each of `picked_songs`, when the list is a
+    /// playlist that knows them; empty otherwise.
+    pub picked_positions: &'a [u32],
+    /// This row's position in its playlist, whatever the view's order.
+    pub position: Option<u32>,
 }
 
 /// Draw each credited artist separately so its Spotify id remains clickable.
@@ -1173,9 +1387,18 @@ struct Columns {
     album: f32,
     added_by: f32,
     added: f32,
+    plays: f32,
     heart: f32,
     duration: f32,
     more: f32,
+}
+
+/// The play count column's width, in rows and in the header alike.
+const PLAYS_WIDTH: f32 = 120.0;
+
+/// Whether a list `width` wide has room for play counts.
+fn plays_fit(width: f32) -> bool {
+    width > 560.0
 }
 
 fn columns(width: f32, row: &TrackRow<'_>) -> Columns {
@@ -1201,6 +1424,11 @@ fn columns(width: f32, row: &TrackRow<'_>) -> Columns {
         },
         added: if row.added_at.is_some() && wide {
             120.0
+        } else {
+            0.0
+        },
+        plays: if row.show_plays && !row.compact && plays_fit(width) {
+            PLAYS_WIDTH
         } else {
             0.0
         },
@@ -1260,7 +1488,7 @@ fn track_row_contents(
     let width = ui.available_width();
     let (rect, response) = ui.allocate_exact_size(vec2(width, row_height), Sense::click_and_drag());
     let rect = rect.translate(vec2(0.0, row.shift));
-    let unavailable = !row_playable(row.item);
+    let unavailable = !app.row_playable(row.item);
     response.widget_info(|| {
         egui::WidgetInfo::selected(
             egui::WidgetType::Button,
@@ -1282,7 +1510,10 @@ fn track_row_contents(
         return (response, None);
     }
     // Start a sidebar drag only after egui's drag threshold.
-    if row.item.is_track() && response.drag_started_by(egui::PointerButton::Primary) {
+    if ui.is_enabled()
+        && row.item.is_track()
+        && response.drag_started_by(egui::PointerButton::Primary)
+    {
         let items = dragged_items(row.item, row.picked, row.picked_songs);
         let source_playlist = match row.context {
             RowContext::Context {
@@ -1322,12 +1553,17 @@ fn track_row_contents(
     // A queue row is a position, not the song itself: the same song can
     // sit in the queue while it plays (a repeat wrapping around, a song
     // queued twice), and only the Now playing row is the playing one.
+    // A song started from one of its copies in this list marks that copy
+    // alone: the others are other places in the list.
+    let played_copy = app.row_is_played_copy(row.context, row.index, row.item.uri());
     let is_current = !matches!(row.context, RowContext::Queue)
+        && played_copy
         && app
             .current_track_uri()
             .is_some_and(|uri| uri == row.item.uri());
+    let pending = played_copy && app.play_pending(row.item.uri());
     let playing = is_current && app.believed_playing();
-    let hovered = ui.rect_contains_pointer(rect) || response.has_focus();
+    let hovered = ui.is_enabled() && (ui.rect_contains_pointer(rect) || response.has_focus());
     if row.picked {
         // Keep the existing translucent selection, using a neutral palette
         // color so selecting a song does not mark it as playing.
@@ -1358,7 +1594,7 @@ fn track_row_contents(
     // Number / play.
     if cols.number > 0.0 {
         let cell = Rect::from_min_size(pos2(x, rect.top()), vec2(cols.number, row_height));
-        if app.play_pending(row.item.uri()) {
+        if pending {
             let mut child = ui.new_child(
                 UiBuilder::new()
                     .max_rect(cell)
@@ -1401,7 +1637,7 @@ fn track_row_contents(
         paint_cover(
             ui,
             &palette,
-            row.item.image(64),
+            row.item.image(app.art_px(size)),
             cover_rect,
             6.0,
             if row.item.is_track() {
@@ -1422,7 +1658,7 @@ fn track_row_contents(
                     Color32::from_black_alpha(alpha),
                 );
             };
-            if app.play_pending(row.item.uri()) {
+            if pending {
                 scrim(140);
                 let mut child = ui.new_child(
                     UiBuilder::new()
@@ -1446,7 +1682,8 @@ fn track_row_contents(
         x += cols.cover;
     }
     let right_fixed = cols.heart + cols.duration + cols.more + 8.0;
-    let text_right = rect.right() - right_fixed - cols.added - cols.added_by - cols.album;
+    let text_right =
+        rect.right() - right_fixed - cols.plays - cols.added - cols.added_by - cols.album;
     let title_rect = Rect::from_min_max(
         pos2(x, rect.top()),
         pos2((text_right - 12.0).max(x), rect.bottom()),
@@ -1713,6 +1950,20 @@ fn track_row_contents(
         }
         x += cols.added;
     }
+    // Plays.
+    if cols.plays > 0.0 {
+        if let Some(plays) = app.play_counts.get(row.item.uri()) {
+            let cell = Rect::from_min_size(pos2(x, rect.top()), vec2(cols.plays, row_height));
+            painter.text(
+                pos2(cell.left(), cell.center().y),
+                egui::Align2::LEFT_CENTER,
+                util::format_count(*plays),
+                theme::regular(13.0),
+                palette.secondary,
+            );
+        }
+        x += cols.plays;
+    }
 
     // Heart.
     if cols.heart > 0.0 {
@@ -1730,17 +1981,18 @@ fn track_row_contents(
             {
                 child.set_opacity(0.0);
             }
-            let (icon, color) = if saved == Some(true) {
-                (Icon::HeartFilled, palette.accent)
+            // A liked heart stays green under the pointer.
+            let (icon, color, hover) = if saved == Some(true) {
+                (Icon::HeartFilled, palette.accent, palette.accent_hover)
             } else {
-                (Icon::Heart, palette.secondary)
+                (Icon::Heart, palette.secondary, palette.text)
             };
             let tooltip = if saved == Some(true) {
                 gettext(app.locale, "Remove from Liked Songs")
             } else {
                 gettext(app.locale, "Save to Liked Songs")
             };
-            if theme::icon_button(&mut child, icon, 16.0, color, palette.text, &tooltip).clicked() {
+            if theme::icon_button(&mut child, icon, 16.0, color, hover, &tooltip).clicked() {
                 app.actions
                     .push(Action::ToggleSaved(row.item.uri().to_string()));
             }
@@ -1788,19 +2040,28 @@ fn track_row_contents(
         egui::Popup::menu(&more)
             .id(menu_id)
             .frame(menu_frame(&palette))
-            .show(|ui| item_menu(ui, app, row.item, Some(row.context), Some(row.index)));
+            .show(|ui| {
+                item_menu_at(
+                    ui,
+                    app,
+                    row.item,
+                    Some(row.context),
+                    Some(row.index),
+                    row.position,
+                )
+            });
     }
 
     // Row interactions.
     let mut pick = None;
     let accessible_click = response.clicked() && response.interact_pointer_pos().is_none();
-    if (response.double_clicked() || accessible_click) && !unavailable {
+    if ui.is_enabled() && (response.double_clicked() || accessible_click) && !unavailable {
         app.actions.push(Action::PlayFromRow {
             context: row.context.clone(),
             uri: row.item.uri().to_string(),
             index: row.index as u32,
         });
-    } else if response.clicked() {
+    } else if ui.is_enabled() && response.clicked() {
         // The cell that holds the play control: the number column when
         // there is one, the cover when there is not.
         let control = if cols.number > 0.0 {
@@ -1860,9 +2121,16 @@ fn track_row_contents(
                     } => Some(playlist),
                     _ => None,
                 };
-                picked_menu(ui, app, row.picked_songs, editable);
+                picked_menu(ui, app, row.picked_songs, row.picked_positions, editable);
             } else {
-                item_menu(ui, app, row.item, Some(row.context), Some(row.index));
+                item_menu_at(
+                    ui,
+                    app,
+                    row.item,
+                    Some(row.context),
+                    Some(row.index),
+                    row.position,
+                );
             }
         });
     crate::autoscroll::row(ui, &response);
@@ -2009,6 +2277,7 @@ pub fn table_header(
     show_album: bool,
     show_added: bool,
     show_added_by: bool,
+    show_plays: bool,
     show_cover: bool,
     sort: Option<crate::model::TableSort>,
 ) -> Option<crate::model::SortColumn> {
@@ -2151,8 +2420,14 @@ pub fn table_header(
     } else {
         0.0
     };
+    let plays_width = if show_plays && plays_fit(width) {
+        PLAYS_WIDTH
+    } else {
+        0.0
+    };
     let right_fixed = 36.0 + 56.0 + 36.0 + 8.0;
-    let mut cx = rect.right() - right_fixed - added_width - added_by_width - album_width;
+    let mut cx =
+        rect.right() - right_fixed - plays_width - added_width - added_by_width - album_width;
     if album_width > 0.0 {
         heading(
             ui,
@@ -2177,6 +2452,17 @@ pub fn table_header(
             cx,
             &pgettext(locale, "column heading", "DATE ADDED"),
             SortColumn::Added,
+        );
+        cx += added_width;
+    }
+    // Spotify's own lists do not sort by plays, and neither does this one.
+    if plays_width > 0.0 {
+        ui.painter().text(
+            pos2(cx, rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            pgettext(locale, "column heading", "PLAYS"),
+            font.clone(),
+            color,
         );
     }
     if number_clicked {
@@ -2304,7 +2590,7 @@ pub fn card_row_height(ui: &mut Ui) -> f32 {
     const TITLE_GAP: f32 = 10.0;
     const SUBTITLE_GAP: f32 = 2.0;
     const BOTTOM_PAD: f32 = 8.0;
-    let image_size = CARD_WIDTH - 2.0 * PAD;
+    let image_size = CARD_ART;
     let title_font = theme::semibold(14.0);
     let subtitle_font = theme::regular(12.5);
     let (title_row, subtitle_row) = ui.fonts_mut(|fonts| {
@@ -2335,7 +2621,7 @@ pub fn card(
     const TITLE_GAP: f32 = 10.0;
     const SUBTITLE_GAP: f32 = 2.0;
     const BOTTOM_PAD: f32 = 8.0;
-    let image_size = CARD_WIDTH - 2.0 * PAD;
+    let image_size = CARD_ART;
     let text_width = image_size;
     let title_font = theme::semibold(14.0);
     let subtitle_font = theme::regular(12.5);
@@ -2463,6 +2749,25 @@ pub fn shelf(
 ) {
     ui.add_space(8.0);
     theme::section_title(ui, palette, title);
+    shelf_cards(ui, id, add_contents);
+}
+
+/// A shelf whose title opens a page, as Your top songs does; true when the
+/// title was clicked.
+pub fn linked_shelf(
+    ui: &mut Ui,
+    palette: &Palette,
+    id: &str,
+    title: &str,
+    add_contents: impl FnOnce(&mut Ui),
+) -> bool {
+    ui.add_space(8.0);
+    let clicked = theme::link(ui, title, theme::bold(17.0), palette.text).clicked();
+    shelf_cards(ui, id, add_contents);
+    clicked
+}
+
+fn shelf_cards(ui: &mut Ui, id: &str, add_contents: impl FnOnce(&mut Ui)) {
     ui.add_space(4.0);
     crate::autoscroll::show(
         ui,
@@ -2486,6 +2791,95 @@ pub fn grid(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui)) {
     });
 }
 
+/// The colour of a skeleton's shapes: the surface a loaded row or card
+/// draws on, so the page keeps its look while it loads.
+fn skeleton_fill(palette: &Palette) -> egui::Color32 {
+    palette
+        .surface_hover
+        .gamma_multiply(if palette.dark { 0.9 } else { 1.0 })
+}
+
+/// How wide a skeleton's text bar is, as a share of its room: varied by
+/// row so the placeholder reads as a list rather than a grid.
+fn skeleton_share(index: usize, line: usize) -> f32 {
+    const SHARES: [f32; 5] = [0.62, 0.48, 0.71, 0.55, 0.4];
+    SHARES[(index * 2 + line) % SHARES.len()] * if line == 0 { 1.0 } else { 0.7 }
+}
+
+/// Placeholder rows shaped like the songs a page is loading, in place of a
+/// spinner (#674): a cover and two lines each. They are drawn once and do
+/// not move, so loading asks for no frames. Screen readers hear Loading….
+pub fn skeleton_rows(ui: &mut Ui, palette: &Palette, locale: Locale, count: usize) {
+    let fill = skeleton_fill(palette);
+    let (rect, response) = ui.allocate_exact_size(
+        vec2(ui.available_width(), theme::ROW_HEIGHT * count as f32),
+        Sense::hover(),
+    );
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Label, true, gettext(locale, "Loading…"))
+    });
+    if !ui.is_rect_visible(rect) {
+        return;
+    }
+    let painter = ui.painter_at(rect);
+    for index in 0..count {
+        let top = rect.top() + theme::ROW_HEIGHT * index as f32;
+        let cover = Rect::from_min_size(
+            pos2(rect.left() + 12.0, top + (theme::ROW_HEIGHT - 40.0) / 2.0),
+            Vec2::splat(40.0),
+        );
+        painter.rect_filled(cover, CornerRadius::same(4), fill);
+        let room = (rect.right() - cover.right() - 32.0).clamp(0.0, 420.0);
+        for (line, (y, height)) in [(top + 18.0, 10.0), (top + 34.0, 8.0)]
+            .into_iter()
+            .enumerate()
+        {
+            let bar = Rect::from_min_size(
+                pos2(cover.right() + 14.0, y),
+                vec2(room * skeleton_share(index, line), height),
+            );
+            painter.rect_filled(bar, CornerRadius::same(4), fill);
+        }
+    }
+}
+
+/// Placeholder cards for a shelf that is loading, the size of the cards it
+/// will show, round for artists. Like [`skeleton_rows`], they do not move.
+pub fn skeleton_cards(ui: &mut Ui, palette: &Palette, locale: Locale, count: usize, round: bool) {
+    let fill = skeleton_fill(palette);
+    const PAD: f32 = 12.0;
+    let height = PAD + CARD_ART + 10.0 + 14.0 + 6.0 + 10.0 + PAD;
+    for index in 0..count {
+        let (rect, response) = ui.allocate_exact_size(vec2(CARD_WIDTH, height), Sense::hover());
+        if index == 0 {
+            response.widget_info(|| {
+                egui::WidgetInfo::labeled(
+                    egui::WidgetType::Label,
+                    true,
+                    gettext(locale, "Loading…"),
+                )
+            });
+        }
+        if !ui.is_rect_visible(rect) {
+            continue;
+        }
+        let painter = ui.painter();
+        let art = Rect::from_min_size(rect.min + vec2(PAD, PAD), Vec2::splat(CARD_ART));
+        let radius = if round { CARD_ART / 2.0 } else { 6.0 };
+        painter.rect_filled(art, CornerRadius::same(radius as u8), fill);
+        let title = Rect::from_min_size(
+            pos2(art.left(), art.bottom() + 12.0),
+            vec2(CARD_ART * skeleton_share(index, 0), 12.0),
+        );
+        painter.rect_filled(title, CornerRadius::same(4), fill);
+        let subtitle = Rect::from_min_size(
+            pos2(art.left(), title.bottom() + 8.0),
+            vec2(CARD_ART * skeleton_share(index, 1), 9.0),
+        );
+        painter.rect_filled(subtitle, CornerRadius::same(4), fill);
+    }
+}
+
 pub fn loading_row(ui: &mut Ui, palette: &Palette, locale: Locale) {
     ui.horizontal(|ui| {
         ui.add_space(8.0);
@@ -2494,12 +2888,31 @@ pub fn loading_row(ui: &mut Ui, palette: &Palette, locale: Locale) {
     });
 }
 
+pub fn sanitize_error_message<'a>(message: &'a str, locale: Locale) -> std::borrow::Cow<'a, str> {
+    if message.contains("http://")
+        || message.contains("https://")
+        || message.contains("error sending request for url")
+        || message.contains("dns error")
+        || message.contains("connection closed")
+    {
+        gettext(locale, "Network connection error. Check your connection.")
+    } else {
+        std::borrow::Cow::Borrowed(message)
+    }
+}
+
 pub fn error_row(ui: &mut Ui, app: &mut App, message: &str, retry: Option<Page>) {
     let palette = app.palette;
+    let sanitized = sanitize_error_message(message, app.locale);
     ui.horizontal(|ui| {
         ui.add_space(8.0);
         theme::icon(ui, Icon::CircleAlert, 16.0, palette.danger);
-        theme::text(ui, message, theme::regular(13.0), palette.secondary);
+        theme::text(
+            ui,
+            sanitized.as_ref(),
+            theme::regular(13.0),
+            palette.secondary,
+        );
         if let Some(page) = retry
             && theme::soft_button(
                 ui,
@@ -2953,9 +3366,13 @@ pub fn search_field_in(
     ui.ctx()
         .accesskit_node_builder(response.id, |node| node.set_label(hint));
     if !text.is_empty() {
+        // The box must fit what `theme::icon_button` allocates around the
+        // glyph; a smaller child makes egui clamp its centered layout to
+        // the child's top edge, dropping the glyph below the midline.
+        let clear_size = 15.0;
         let clear_rect = Rect::from_center_size(
             pos2(rect.right() - 17.0, rect.center().y),
-            Vec2::splat(24.0),
+            Vec2::splat(clear_size + theme::ICON_BUTTON_PAD),
         );
         let mut clear = ui.new_child(
             UiBuilder::new()
@@ -2965,7 +3382,7 @@ pub fn search_field_in(
         if theme::icon_button(
             &mut clear,
             Icon::X,
-            15.0,
+            clear_size,
             palette.secondary,
             palette.text,
             &gettext(locale, "Clear"),
@@ -3241,6 +3658,42 @@ pub fn proxy_scope_note(
 }
 
 #[cfg(test)]
+mod playing_cover_tests {
+    use super::*;
+
+    /// The last song's cover stands in for the next one's only right after
+    /// the change: not for a song without art, not after a gap, and not for
+    /// good when the new cover cannot be had.
+    #[test]
+    fn the_last_songs_cover_stands_in_only_for_a_moment() {
+        let shown = ShownCover {
+            url: std::sync::Arc::from("https://i.scdn.co/image/a"),
+            seen: 10.0,
+        };
+        let next = Some("https://i.scdn.co/image/c");
+        assert_eq!(
+            stand_in(Some(&shown), next, 10.5).as_deref(),
+            Some("https://i.scdn.co/image/a")
+        );
+        assert_eq!(
+            stand_in(Some(&shown), None, 10.5),
+            None,
+            "a song without art"
+        );
+        assert_eq!(
+            stand_in(Some(&shown), Some("https://i.scdn.co/image/a"), 10.5),
+            None
+        );
+        assert_eq!(
+            stand_in(Some(&shown), next, 10.0 + PLAYING_COVER_HOLD),
+            None,
+            "too late"
+        );
+        assert_eq!(stand_in(None, next, 10.5), None);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::app::{App, AppOptions};
@@ -3502,6 +3955,59 @@ mod tests {
         }
     }
 
+    /// The clear button sits on the search pill's midline. The button
+    /// allocates its glyph plus [`theme::ICON_BUTTON_PAD`] on every side,
+    /// so the box handed to it must be that wide: in a tighter one egui
+    /// clamps the centered layout to the box's top edge and the glyph
+    /// lands below the midline.
+    #[test]
+    fn the_clear_button_sits_on_the_search_pill_midline() {
+        use egui::accesskit::Role;
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let mut text = "michael".to_string();
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(600.0, 400.0))),
+                ..Default::default()
+            },
+            |ui| {
+                search_field(
+                    ui,
+                    &Palette::dark(),
+                    Locale::English,
+                    egui::Id::new("clear-midline"),
+                    &mut text,
+                    "Search",
+                    300.0,
+                );
+            },
+        );
+        output.textures_delta.clear();
+        let tree = output
+            .platform_output
+            .accesskit_update
+            .expect("screen-reader tree");
+        let midline = |label: &str, role: Role| {
+            let bounds = tree
+                .nodes
+                .iter()
+                .find(|(_, node)| node.label() == Some(label) && node.role() == role)
+                .unwrap_or_else(|| panic!("missing {label:?} {role:?}"))
+                .1
+                .bounds()
+                .expect("bounds");
+            (bounds.y0 + bounds.y1) / 2.0
+        };
+        let field = midline("Search", Role::TextInput);
+        let clear = midline("Clear", Role::Button);
+        assert!(
+            (field - clear).abs() < 0.6,
+            "the clear button must sit on the search pill's midline: got {clear}, expected {field}"
+        );
+    }
+
     fn test_app() -> App {
         let root = std::env::temp_dir().join(format!(
             "spotifast-virtual-{}-{}",
@@ -3523,6 +4029,7 @@ mod tests {
                 media_controls: false,
                 restore_sign_in: false,
                 tray: false,
+                autostart: false,
             },
         )
     }
@@ -3883,11 +4390,14 @@ mod tests {
                                     added_at: None,
                                     added_by: None,
                                     show_added_by: false,
+                                    show_plays: false,
                                     compact: false,
                                     thin: false,
                                     shift: 0.0,
                                     picked,
                                     picked_songs: &[],
+                                    picked_positions: &[],
+                                    position: None,
                                 },
                             );
                             rect = response.rect;
@@ -4202,5 +4712,47 @@ mod tests {
             text.x1 <= control.x0,
             "the control moved: description {text:?}, control {control:?}"
         );
+    }
+
+    /// Covers are painted well below their pixel size, so they are sampled
+    /// through mipmaps: without them a 640 pixel cover on a 148 point card
+    /// shows stair-stepped edges and grain.
+    #[test]
+    fn covers_are_uploaded_with_mipmaps() {
+        let ctx = egui::Context::default();
+        egui_extras::install_image_loaders(&ctx);
+        let mut encoded = std::io::Cursor::new(Vec::new());
+        image::RgbImage::from_pixel(64, 64, image::Rgb([20, 30, 40]))
+            .write_to(&mut encoded, image::ImageFormat::Png)
+            .unwrap();
+        let uri = "bytes://mipmapped-cover.png";
+        ctx.include_bytes(uri, encoded.into_inner());
+        let palette = theme::Palette::dark();
+        let started = std::time::Instant::now();
+        while !ctx
+            .tex_manager()
+            .read()
+            .allocated()
+            .any(|(_, meta)| meta.name == uri)
+        {
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(10),
+                "the cover never loaded"
+            );
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                let rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(148.0, 148.0));
+                paint_cover(ui, &palette, Some(uri), rect, 6.0, Icon::Disc, None);
+            });
+            output.textures_delta.clear();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let manager = ctx.tex_manager();
+        let manager = manager.read();
+        let (_, meta) = manager
+            .allocated()
+            .find(|(_, meta)| meta.name == uri)
+            .unwrap();
+        assert_eq!(meta.options, crate::images::COVER_TEXTURE);
+        assert_eq!(meta.options.mipmap_mode, Some(egui::TextureFilter::Linear));
     }
 }

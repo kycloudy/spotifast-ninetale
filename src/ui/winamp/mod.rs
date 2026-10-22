@@ -33,9 +33,6 @@ mod playlist;
 
 pub use pixel_text::PixelText;
 
-/// How often the visualiser moves.
-const VIS_FRAME: Duration = Duration::from_micros(16_667);
-
 /// The stack's height in skin pixels: the main window, and the equalizer
 /// and the playlist under it, whichever are open.
 fn stack_height(settings: &crate::settings::Settings) -> u32 {
@@ -272,6 +269,34 @@ impl View<'_> {
         let memory = Id::new(("winamp-slider", id));
         let dragging = self.ui.data(|data| data.get_temp::<f32>(memory));
         let travel = (area.width - thumb) as f32;
+        // egui hands a press near a widget to the closest one, so a click
+        // just past the end of the volume bar lands on the balance slider
+        // beside it, clamped to its far left (#804). A slider only moves
+        // for a press on its own track.
+        let rect = self.rect(area);
+        let grabbed = Id::new(("winamp-slider-grabbed", id));
+        if response.drag_started() {
+            let on_track = self
+                .ui
+                .input(|input| input.pointer.press_origin())
+                .is_some_and(|origin| rect.contains(origin));
+            self.ui.data_mut(|data| data.insert_temp(grabbed, on_track));
+        }
+        let on_track = if response.clicked() && !response.dragged() {
+            response
+                .interact_pointer_pos()
+                .is_some_and(|pos| rect.contains(pos))
+        } else {
+            self.ui
+                .data(|data| data.get_temp::<bool>(grabbed))
+                .unwrap_or(false)
+        };
+        if response.drag_stopped() {
+            self.ui.data_mut(|data| data.remove::<bool>(grabbed));
+        }
+        if !on_track {
+            return (response, SliderEvent::None);
+        }
         let pointer = response.interact_pointer_pos().map(|pos| {
             ((self.skin_x(pos) - area.x as f32 - thumb as f32 / 2.0) / travel).clamp(0.0, 1.0)
         });
@@ -302,14 +327,7 @@ pub fn show(app: &mut App, ui: &mut Ui) {
     let unit = unit(app, &ctx);
     fit_window(&ctx, &app.settings, unit);
     let origin = ui.max_rect().min;
-    let (outer, focused) = ctx.input(|input| {
-        let viewport = input.viewport();
-        (viewport.outer_rect, viewport.focused)
-    });
-    if let Some(rect) = outer {
-        app.winamp.last_pos = Some([rect.min.x, rect.min.y]);
-    }
-    let focused = focused.unwrap_or(true);
+    let focused = ctx.input(|input| input.viewport().focused.unwrap_or(true));
     super::keys::handle(app, &ctx);
     for path in dropped_skins(&ctx) {
         app.actions.push(Action::InstallSkin(path));
@@ -379,11 +397,8 @@ pub fn show(app: &mut App, ui: &mut Ui) {
         playlist::show(app, &mut below, now.as_ref(), focused);
     }
 
-    // egui subtracts one predicted frame from delayed repaints; the display
-    // supplies it, through the vsync swap or, on Wayland, the compositor's
-    // frame callback that eframe waits for.
     if vis_moving {
-        ctx.request_repaint_after(VIS_FRAME);
+        crate::theme::visualiser_frame(&ctx, app.visualiser_fps());
     } else if now.is_some() {
         ctx.request_repaint_after(Duration::from_millis(220));
     }
@@ -1552,6 +1567,7 @@ mod tests {
         NowPlaying {
             local: true,
             device_name: None,
+            device_kind: None,
             uri: "spotify:track:x".into(),
             id: None,
             title: title.into(),
