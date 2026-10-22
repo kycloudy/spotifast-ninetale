@@ -1202,14 +1202,6 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             ),
         ),
         RowText::new(
-            dither_headers.clone(),
-            gettext(
-                locale,
-                "Draw the cover behind each page's title as a field of dots.",
-            ),
-        )
-        .when(app.settings.accent_from_art),
-        RowText::new(
             player_bar_vis_click.clone(),
             gettext(locale, "Allow clicks on empty player bar space to cycle the visualizer."),
         ),
@@ -1222,6 +1214,14 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         ),
         pair_row(fastframe_theme::Base::Light),
         pair_row(fastframe_theme::Base::Dark),
+        RowText::new(
+            dither_headers.clone(),
+            gettext(
+                locale,
+                "Draw the cover behind each page's title as a field of dots.",
+            ),
+        )
+        .when(app.settings.accent_from_art),
     ];
     if section_matches(&needle, &appearance, &appearance_rows) {
         any_visible = true;
@@ -1364,7 +1364,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 &palette,
                 &needle,
                 &appearance,
-                &appearance_rows[9],
+                &appearance_rows[13],
                 |ui| {
                     if widgets::switch(
                         ui,

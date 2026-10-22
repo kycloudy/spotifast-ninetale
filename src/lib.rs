@@ -13,8 +13,8 @@ pub mod cast;
 pub mod credentials;
 #[cfg(any(test, feature = "demo"))]
 pub mod demo;
-pub mod dither;
 pub mod device_history;
+pub mod dither;
 pub mod emoji;
 pub mod eq;
 pub mod history;

@@ -14471,6 +14471,7 @@ mod tests {
         app.handle_api(ApiResponse::MyPlaylists {
             offset: 0,
             generation: app.library.playlists_generation,
+            partial: false,
             result: listed(),
         });
         assert_eq!(
@@ -14516,6 +14517,7 @@ mod tests {
         app.handle_api(ApiResponse::MyPlaylists {
             offset: 0,
             generation: app.library.playlists_generation,
+            partial: false,
             result: listed(),
         });
         assert_eq!(app.library_entry("blank").unwrap().name, "This Is TUYU");
@@ -14796,14 +14798,18 @@ mod tests {
         app.auth = AuthStatus::Connected {
             username: "me".into(),
         };
-        let ready = || LocalPlayback::Ready {
-            device_id: "here".into(),
+        // Local playback's session comes up again after dropping.
+        let reconnect = |app: &mut App| {
+            app.handle_playback(LocalPlayback::Unavailable);
+            app.handle_playback(LocalPlayback::Ready {
+                device_id: "here".into(),
+            });
         };
 
         // Still waiting on the shared app.
         app.load_playlists();
         let waiting = app.library.playlists_generation;
-        app.handle_playback(ready());
+        reconnect(&mut app);
         assert_ne!(app.library.playlists_generation, waiting);
         assert!(app.library.playlists.is_loading());
         app.handle_api(ApiResponse::MyPlaylists {
@@ -14818,7 +14824,7 @@ mod tests {
 
         // A complete list is not read again.
         let complete = app.library.playlists_generation;
-        app.handle_playback(ready());
+        reconnect(&mut app);
         assert_eq!(app.library.playlists_generation, complete);
 
         // A personal app's partial list is, and stays until replaced.
@@ -14827,7 +14833,7 @@ mod tests {
         app.handle_api(whole_library(&app, &["a", "b"], true));
         assert!(app.library.playlists_partial);
         let partial = app.library.playlists_generation;
-        app.handle_playback(ready());
+        reconnect(&mut app);
         assert_ne!(app.library.playlists_generation, partial);
         assert_eq!(listed_playlists(&app), playlist_ids(&["a", "b"]));
         app.handle_api(whole_library(&app, &["a", "daily", "b"], false));
@@ -14988,6 +14994,7 @@ mod tests {
         app.handle_api(ApiResponse::MyPlaylists {
             offset: 0,
             generation,
+            partial: false,
             result: Ok(playlist_page(&["a", "b"], 0, 3)),
         });
         assert_eq!(listed_playlists(&app), playlist_ids(&["x", "y"]));
@@ -14995,6 +15002,7 @@ mod tests {
         app.handle_api(ApiResponse::MyPlaylists {
             offset: 2,
             generation,
+            partial: false,
             result: Ok(playlist_page(&["c"], 2, 3)),
         });
         assert_eq!(listed_playlists(&app), playlist_ids(&["a", "b", "c"]));
@@ -15016,6 +15024,7 @@ mod tests {
         app.handle_api(ApiResponse::MyPlaylists {
             offset: 0,
             generation: app.library.playlists_generation,
+            partial: false,
             result: Ok(playlist_page(&["a"], 0, 1)),
         });
         app.receive_account_caches("alice", 7, cached_playlists(&["x"]), None);
@@ -15032,6 +15041,7 @@ mod tests {
         app.handle_api(ApiResponse::MyPlaylists {
             offset: 0,
             generation: app.library.playlists_generation,
+            partial: false,
             result: Err(crate::api::ApiError::RateLimited),
         });
         assert!(matches!(app.library.playlists, Loadable::Failed(_)));
@@ -15044,6 +15054,7 @@ mod tests {
         app.handle_api(ApiResponse::MyPlaylists {
             offset: 0,
             generation: app.library.playlists_generation,
+            partial: false,
             result: Err(crate::api::ApiError::Network("offline".into())),
         });
         assert_eq!(listed_playlists(&app), playlist_ids(&["x"]));
@@ -15054,6 +15065,7 @@ mod tests {
         app.handle_api(ApiResponse::MyPlaylists {
             offset: 0,
             generation: app.library.playlists_generation,
+            partial: false,
             result: Err(crate::api::ApiError::Status {
                 status: 403,
                 message: "forbidden".into(),
@@ -15086,6 +15098,7 @@ mod tests {
         app.handle_api(ApiResponse::MyPlaylists {
             offset: 0,
             generation: before,
+            partial: false,
             result: Ok(playlist_page(&["a", "b"], 0, 2)),
         });
         assert_eq!(listed_playlists(&app), playlist_ids(&["n", "b"]));
@@ -15103,6 +15116,7 @@ mod tests {
         app.handle_api(ApiResponse::MyPlaylists {
             offset: 0,
             generation: app.library.playlists_generation,
+            partial: false,
             result: Ok(playlist_page(&["n", "b"], 0, 2)),
         });
         assert_eq!(listed_playlists(&app), playlist_ids(&["n", "b"]));
@@ -15127,6 +15141,7 @@ mod tests {
         app.handle_api(ApiResponse::MyPlaylists {
             offset: 0,
             generation: app.library.playlists_generation,
+            partial: false,
             result: Err(crate::api::ApiError::Network("offline".into())),
         });
         assert!(app.library.playlists_retry_at.is_some());
@@ -15177,6 +15192,7 @@ mod tests {
         app.handle_api(ApiResponse::MyPlaylists {
             offset: 0,
             generation: reread,
+            partial: false,
             result: Ok(crate::api::models::Page::whole(
                 playlist_page(&["a", "b", "c"], 0, 3).items,
             )),
@@ -15190,6 +15206,7 @@ mod tests {
         app.handle_api(ApiResponse::MyPlaylists {
             offset: 0,
             generation: waiting,
+            partial: false,
             result: Ok(playlist_page(&["a"], 0, 1)),
         });
         assert_eq!(listed_playlists(&app), playlist_ids(&["a", "b", "c"]));
@@ -15220,6 +15237,7 @@ mod tests {
         app.handle_api(ApiResponse::MyPlaylists {
             offset: 0,
             generation: app.library.playlists_generation,
+            partial: false,
             result: Ok(playlist_page(&["a", "b"], 0, 2)),
         });
         assert_eq!(listed_playlists(&app), playlist_ids(&["a", "b"]));
@@ -15468,6 +15486,7 @@ mod tests {
         app.handle_api(ApiResponse::MyPlaylists {
             offset: 0,
             generation: app.library.playlists_generation,
+            partial: false,
             result: Ok(playlist_page(&["a", "b"], 0, 3)),
         });
         assert_eq!(listed_playlists(&app), playlist_ids(&["x"]));
@@ -15492,6 +15511,7 @@ mod tests {
         app.handle_api(ApiResponse::MyPlaylists {
             offset: 0,
             generation: app.library.playlists_generation,
+            partial: false,
             result: Ok(playlist_page(&["a", "b"], 0, 3)),
         });
         assert_eq!(listed_playlists(&app), playlist_ids(&["a", "b"]));
@@ -15511,6 +15531,7 @@ mod tests {
         app.handle_api(ApiResponse::MyPlaylists {
             offset: 0,
             generation: app.library.playlists_generation,
+            partial: false,
             result: Ok(playlist_page(&["a", "b", "c"], 0, 3)),
         });
         assert!(app.library.playlists_whole);
@@ -15571,11 +15592,13 @@ mod tests {
         app.handle_api(ApiResponse::MyPlaylists {
             offset: 0,
             generation,
+            partial: false,
             result: Ok(playlist_page(&["a", "b"], 0, 3)),
         });
         app.handle_api(ApiResponse::MyPlaylists {
             offset: 2,
             generation,
+            partial: false,
             result: Err(crate::api::ApiError::Status {
                 status: 403,
                 message: "forbidden".into(),
@@ -15700,6 +15723,7 @@ mod tests {
         app.handle_api(ApiResponse::MyPlaylists {
             offset: 0,
             generation: app.library.playlists_generation,
+            partial: false,
             result: Ok(playlist_page(&["a"], 0, 1)),
         });
         assert_eq!(

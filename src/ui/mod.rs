@@ -270,12 +270,6 @@ fn page_image(app: &App, page: &Page, target: u32) -> Option<String> {
             .and_then(|show| pick_image(&show.images, target))
             .map(str::to_string),
         Page::Radio(seed) => pick_image(&app.radio_images(seed), target).map(str::to_string),
-        Page::LikedSongs => {
-            return app
-                .settings
-                .accent_from_art
-                .then_some(Color32::from_rgb(0x50, 0x38, 0xc8));
-        }
         _ => None,
     }
 }
@@ -296,6 +290,7 @@ pub(crate) fn page_label(app: &App) -> (Icon, String) {
             gettext(locale, "Your top songs").into_owned(),
         ),
         Page::LikedSongs => (Icon::Heart, gettext(locale, "Liked Songs").into_owned()),
+        Page::NewReleases => (Icon::Disc, gettext(locale, "New releases").into_owned()),
         Page::Albums => (Icon::Disc, gettext(locale, "Albums").into_owned()),
         Page::Artists => (Icon::Users, gettext(locale, "Artists").into_owned()),
         Page::Podcasts => (Icon::Headphones, gettext(locale, "Podcasts").into_owned()),
@@ -353,7 +348,10 @@ pub(crate) fn page_label(app: &App) -> (Icon, String) {
 fn page_tint(app: &mut App) -> Option<Color32> {
     let page = app.page().clone();
     if page == Page::LikedSongs {
-        return Some(Color32::from_rgb(0x50, 0x38, 0xc8));
+        return app
+            .settings
+            .accent_from_art
+            .then_some(Color32::from_rgb(0x50, 0x38, 0xc8));
     }
     let image = page_image(app, &page, 64);
     if !app.settings.accent_from_art && image.is_some() {
@@ -535,36 +533,6 @@ fn dither_opacity(scrolled: f32) -> f32 {
 
 /// How far the page scrolls before the header's dither has faded out.
 const DITHER_SCROLL_FADE: f32 = 260.0;
-
-/// Makes `rect` drag the borderless window. Register it before child widgets so
-/// they keep their clicks.
-pub fn titlebar_drag(ui: &mut egui::Ui, rect: egui::Rect) {
-    let fullscreen = ui
-        .ctx()
-        .input(|input| input.viewport().fullscreen.unwrap_or(false));
-    if !cfg!(any(target_os = "macos", windows)) || fullscreen {
-        return;
-    }
-    let response = ui.interact(
-        rect,
-        ui.id().with("titlebar-drag"),
-        egui::Sense::click_and_drag(),
-    );
-    if crate::window::custom_titlebar() && response.double_clicked() {
-        let maximized = ui
-            .ctx()
-            .input(|input| input.viewport().maximized.unwrap_or(false));
-        ui.ctx()
-            .send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
-    } else if (crate::window::custom_titlebar() && response.drag_started())
-        || (cfg!(target_os = "macos")
-            && response.is_pointer_button_down_on()
-            && ui.input(|input| input.pointer.primary_pressed())
-            && crate::window::macos_titlebar_should_drag())
-    {
-        ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
-    }
-}
 
 /// Without a native title bar, the top of every panel drags the window, not
 /// only the page's top bar.

@@ -1927,6 +1927,9 @@ mod tests {
         use egui::accesskit::{Action as AccessibleAction, Role};
         let (ctx, mut app) = accessible_app("by-you");
         app.settings.art_expanded = false;
+        // Home's search box has its own Albums scope; the sidebar's shelf
+        // tabs are the ones under test.
+        app.open(Page::Settings);
         accessible_frame(&ctx, &mut app, vec![]);
         let tree = accessible_frame(&ctx, &mut app, vec![]);
         accessible_node(&tree, "Discover Weekly", Role::Button);

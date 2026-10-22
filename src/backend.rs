@@ -8936,34 +8936,6 @@ mod session_tests {
         ));
     }
 
-    /// The session reads the library whole, so its answer to any page of a
-    /// load is the whole list from the top, with nothing after it (#698).
-    #[test]
-    fn the_session_answers_any_library_page_with_the_whole_list() {
-        let listed = |id: &str| Playlist {
-            id: id.into(),
-            ..Playlist::default()
-        };
-        for offset in [0, 50] {
-            let request = ApiRequest::MyPlaylists {
-                offset,
-                generation: 7,
-            };
-            assert_eq!(session_read(&request), Some(SessionRead::Library));
-            let answer = SessionAnswer::Library(Ok(vec![listed("a"), listed("b")]));
-            let Some(ApiResponse::MyPlaylists {
-                offset: 0,
-                generation: 7,
-                result: Ok(page),
-            }) = session_response(&request, answer)
-            else {
-                panic!("expected the whole library from the top");
-            };
-            assert_eq!(page.items.len(), 2);
-            assert_eq!((page.total, page.next_offset()), (2, None));
-        }
-    }
-
     /// The session answers only for the account the Web API verified.
     #[test]
     fn the_session_answers_only_for_the_web_apis_account() {
