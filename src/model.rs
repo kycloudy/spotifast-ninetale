@@ -110,6 +110,8 @@ fn episode_retained_bytes(episode: &Episode) -> usize {
 pub enum Page {
     Home,
     TopSongs,
+    /// The songs of the latest releases from followed artists.
+    NewReleases,
     Search,
     LikedSongs,
     Albums,
@@ -132,6 +134,7 @@ impl Page {
         match self {
             Page::Home => "home".into(),
             Page::TopSongs => "top-songs".into(),
+            Page::NewReleases => "new-releases".into(),
             Page::Search => "search".into(),
             Page::LikedSongs => "liked".into(),
             Page::Albums => "albums".into(),
@@ -152,6 +155,7 @@ impl Page {
         Some(match text {
             "home" => Page::Home,
             "top-songs" => Page::TopSongs,
+            "new-releases" => Page::NewReleases,
             "search" => Page::Search,
             "liked" => Page::LikedSongs,
             "albums" => Page::Albums,
@@ -572,12 +576,38 @@ pub struct Library {
     /// The list came from a personal app, which leaves out Spotify's own
     /// playlists, so a complete read replaces it when one can be made.
     pub playlists_partial: bool,
+    /// When the load on its way began, or `None` when none is.
+    pub playlists_loading_since: Option<Instant>,
+    /// The pages of a reload while the previous list stays shown. The new
+    /// list replaces it whole once its last page arrives, so the sidebar
+    /// never shrinks to the first page and grows back.
+    pub playlists_incoming: Option<Vec<Playlist>>,
+    /// Playlists created or removed here, held over loads that may not
+    /// show the change yet.
+    pub playlists_edits: Vec<PlaylistEdit>,
+    /// When a load that Spotify turned away is asked for again.
+    pub playlists_retry_at: Option<Instant>,
+    /// The list shown is whole: every page of one load, or a restored
+    /// cache. Only a whole list is saved for the next start.
+    pub playlists_whole: bool,
     pub liked: PagedList<SavedTrack>,
     pub albums: PagedList<SavedAlbum>,
     pub artists: CursorList<Artist>,
     pub shows: PagedList<SavedShow>,
     pub episodes: PagedList<SavedEpisode>,
     pub filter: String,
+}
+
+/// A playlist created or removed here, shown that way whatever a load that
+/// began before Spotify confirmed it says.
+#[derive(Clone, Debug)]
+pub struct PlaylistEdit {
+    pub uri: String,
+    /// The playlist to list, or `None` when it was removed.
+    pub added: Option<Playlist>,
+    /// The first load that can tell of the change: one asked for after
+    /// Spotify confirmed it. `None` while it is unconfirmed.
+    pub settled_by: Option<u64>,
 }
 
 #[derive(Default)]
@@ -591,8 +621,26 @@ pub struct HomeData {
     pub top_songs_loading: bool,
     pub top_songs_complete: bool,
     pub recommendations: Loadable<Vec<Track>>,
-    pub discover: HashMap<String, Loadable<Vec<Playlist>>>,
-    pub discover_pending: HashMap<String, Loadable<Vec<Playlist>>>,
+    pub made_for_you: Loadable<Vec<Playlist>>,
+    /// Whether the displayed cards came from the personalized session route.
+    pub made_for_you_personalized: bool,
+    /// Independent request serial: playback readiness can supersede a fallback.
+    pub made_for_you_generation: u64,
+    /// One outstanding shelf answer counts toward the Home refresh.
+    pub made_for_you_loading: bool,
+    /// Whether playback was ready when the current shelf request began.
+    pub made_for_you_session_requested: bool,
+    pub top_mixes: Loadable<Vec<Playlist>>,
+    /// The latest releases from followed artists, newest first.
+    pub new_releases: Loadable<Vec<Album>>,
+    pub new_releases_generation: u64,
+    /// One outstanding New releases answer counts toward the Home refresh.
+    pub new_releases_loading: bool,
+    /// The songs of `new_releases`, for the New releases page, and the
+    /// releases they were read for.
+    pub new_release_tracks: Loadable<Vec<Track>>,
+    pub new_release_tracks_for: Vec<String>,
+    pub new_release_tracks_generation: u64,
     /// Saved podcasts with their newest episodes, in library order, for the
     /// podcast shelf. A refresh replaces them only once it answers.
     pub podcasts: Vec<(Show, Vec<Episode>)>,
@@ -602,9 +650,47 @@ pub struct HomeData {
     pub top_songs_generation: u64,
     pub requested: bool,
     pub loaded_at: Option<Instant>,
+    /// Answers the current refresh still waits for.
+    pub awaiting: usize,
+    /// An answer of the current refresh failed, so the shelves may show
+    /// older, cached rows: the network coming back reads them again.
+    pub refresh_failed: bool,
+    /// Spotify answered for the podcasts, or there are none to ask about,
+    /// so a late cache does not bring back what it showed before.
+    pub podcasts_answered: bool,
 }
 
-pub const DISCOVER_TERMS: &[&str] = &["Discover Weekly", "Release Radar", "Daily Mix", "daylist"];
+/// What the top bar's spinner says the app is waiting for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BackgroundActivity {
+    /// The playlist list or Home is being read again behind what it shows.
+    Library,
+    /// A check for a newer release.
+    Updates,
+    /// Any other request to Spotify.
+    Spotify,
+}
+
+/// What Home last showed for one account, shown at the next start while
+/// Home is read again.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct HomeSnapshot {
+    /// `None` for a shelf Spotify had not answered for, so it loads again
+    /// at the next start instead of showing as empty.
+    pub recently_played: Option<Vec<PlayHistory>>,
+    pub top_artists: Option<Vec<Artist>>,
+    pub top_tracks: Option<Vec<Track>>,
+    /// The ordered shelf and its origin, retained across restarts.
+    pub made_for_you: Option<Vec<Playlist>>,
+    pub made_for_you_personalized: bool,
+    pub top_mixes: Option<Vec<Playlist>>,
+    pub new_releases: Option<Vec<Album>>,
+    /// Legacy search shelves, read for compatibility with older cache files.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub discover: std::collections::BTreeMap<String, Vec<Playlist>>,
+    pub podcasts: Vec<(Show, Vec<Episode>)>,
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SearchFilter {
@@ -656,6 +742,16 @@ pub struct SearchState {
     pub error: Option<String>,
     pub filter: SearchFilter,
     pub typed_at: Option<Instant>,
+    /// Counts runs of typing in the search field. A run ends when the field
+    /// is emptied, its selected text is typed over, or the query is
+    /// submitted.
+    pub edit_run: u64,
+    /// The run the committed query came from, and whether it is still being
+    /// typed. None for a recent search or a link.
+    pub committed_run: Option<(u64, bool)>,
+    /// The Recent searches entry a run recorded. A pause while typing commits
+    /// a prefix; the next query of the same run replaces it.
+    pub typed_entry: Option<(u64, String)>,
     pub focus_requested: bool,
     /// Whether the current search was made in Home's box. Home shows its
     /// results only then; a search from the sidebar leaves Home as it was.
@@ -732,6 +828,7 @@ pub struct PlaylistCachePending {
 pub struct AlbumPage {
     pub generation: u64,
     pub album: Loadable<Album>,
+    pub prerelease: Option<crate::prerelease::Prerelease>,
     pub tracks: PagedList<Track>,
 }
 
@@ -876,6 +973,14 @@ pub struct DragEntry {
 
 #[derive(Clone, Debug)]
 pub enum Dialog {
+    /// A page's header cover, enlarged. Clicking anywhere or Esc closes it.
+    CoverArt {
+        /// The largest artwork Spotify has.
+        url: String,
+        /// The header's own artwork, already loaded, shown until `url` is.
+        shown: Option<String>,
+        title: String,
+    },
     CreatePlaylist {
         name: String,
         public: bool,
@@ -945,6 +1050,20 @@ pub enum Action {
         offset_uri: Option<String>,
         offset_index: Option<u32>,
     },
+    /// Search one kind of thing and play the best match, as
+    /// `spotifast play-search` asks. Queued like the other play actions so
+    /// it takes precedence in the order it was asked for.
+    PlaySearch {
+        kind: String,
+        query: String,
+    },
+    /// The match a play-search found, played only if nothing has taken
+    /// precedence since: a newer play queued in the same frame as the
+    /// answer must still win.
+    PlaySearchMatch {
+        uri: String,
+        serial: u64,
+    },
     /// Play one episode, from `resume_ms` when the row, card or button
     /// that asked showed it as started.
     PlayEpisode {
@@ -984,6 +1103,10 @@ pub enum Action {
     QueueMany {
         songs: Vec<(String, String)>,
     },
+    /// Put songs first in the manual queue, in order, only on this computer.
+    PlayNext {
+        items: Vec<PlayableItem>,
+    },
     /// Move a row within the manually queued "Playing next" section, from a
     /// drag dropped back on the queue. Only applied while the local player
     /// is the active target; see [`crate::app::App::queue_locally_reorderable`].
@@ -997,6 +1120,13 @@ pub enum Action {
     InsertInQueue {
         items: Vec<PlayableItem>,
         position: usize,
+    },
+    /// Take rows out of the manually queued "Playing next" section, each
+    /// named by its index in the queue and the song it holds there. Only
+    /// applied while the local player is the active target; see
+    /// [`crate::app::App::queue_locally_reorderable`].
+    RemoveFromQueue {
+        rows: Vec<(usize, String)>,
     },
     /// Set saved state for several songs explicitly.
     SetSavedMany {
@@ -1023,6 +1153,10 @@ pub enum Action {
     RemoveFromPlaylist {
         playlist_id: String,
         uris: Vec<String>,
+        /// The picked rows' server positions, one for each of `uris`, when
+        /// the view knows them; empty otherwise. With them, a song the list
+        /// holds more than once loses only the picked copies.
+        positions: Vec<u32>,
     },
     MoveInPlaylist {
         playlist_id: String,
@@ -1049,12 +1183,24 @@ pub enum Action {
     /// Send the account to a receiver found on the local network.
     ActivateReceiver(Box<crate::zeroconf::Receiver>),
     RefreshDevices,
+    /// List this computer's audio outputs for the device picker.
+    ListOutputDevices,
+    /// Start Spotifast when the person logs in, this way, or not at all.
+    SetStartWithComputer(Option<fastframe_autostart::Start>),
+    /// Play through this output, by name; `None` is the system default.
+    SetAudioDevice(Option<String>),
     /// Empty Next up of its queued songs, keeping the context's own.
     ClearQueue,
     /// Save the current and upcoming queue as a playlist.
     SaveQueueAsPlaylist,
     /// Save a radio page's songs to a new playlist, by the seed's URI.
     SaveRadio(String),
+    /// Hide a song in one of Spotify's playlists, or show it again (#779).
+    SetHiddenInPlaylist {
+        playlist_uri: String,
+        track_uri: String,
+        hidden: bool,
+    },
     RefreshQueue,
     CopyLink(String),
     /// Copy picked songs' links, one per line, and remember the songs so a
@@ -1067,11 +1213,18 @@ pub enum Action {
     },
     /// Open a web page in the browser.
     OpenUrl(String),
+    SetPrereleaseSaved {
+        uri: String,
+        saved: bool,
+    },
     OpenInSpotify(String),
     Search(String),
     /// Search without leaving the page: Home's own search box shows the
     /// results under it.
     SearchHere(String),
+    /// The search field was emptied or its selection typed over, so the
+    /// next query starts a new run of typing.
+    EndSearchRun,
     ForgetSearch(String),
     SetSearchFilter(SearchFilter),
     /// Greet with these words on Home; blank text greets by the time of day.
@@ -1102,6 +1255,8 @@ pub enum Action {
     ToggleSidebar,
     ToggleQueuePanel,
     ToggleLyricsPanel,
+    /// Show or hide what friends are listening to, in the right panel.
+    ToggleFriendsPanel,
     SetLyricsFullscreen(bool),
     LyricsLineShown(Option<usize>),
     FollowLyrics,
@@ -1119,7 +1274,11 @@ pub enum Action {
     SetLanguage(crate::settings::LanguageChoice),
     OpenThemesFolder,
     SetCustomTheme(String),
+    /// Follow system shows this palette file (or Spotifast's own with
+    /// `None`) while the system is in this appearance.
+    SetPairTheme(fastframe_theme::Base, Option<String>),
     ReloadThemes,
+    SetLibraryByYou(bool),
     SetLibrarySort {
         shelf: crate::settings::LibraryShelf,
         sort: crate::settings::LibrarySort,
@@ -1155,6 +1314,11 @@ pub enum Action {
     /// Windows: draw Spotifast's own title bar instead of the standard one.
     SetCustomTitlebar(bool),
     OpenSkinsFolder,
+    /// Pick the folder a playlist's local files play from.
+    ChooseLocalFilesFolder,
+    /// Stop playing local files.
+    ForgetLocalFilesFolder,
+    OpenLocalFilesFolder,
     /// Pick a different skin each time the mini player opens.
     SetRandomSkin(bool),
     /// Cycle bars, scope, and off.
@@ -1175,6 +1339,13 @@ pub enum Action {
     SetEqPreamp(f32),
     /// One of Winamp's presets, by its place in the list.
     ApplyEqPreset(usize),
+    /// A preset saved here, by name: its preamp and bands.
+    ApplyUserEqPreset(String),
+    /// Save the preamp and bands as a preset of this name, replacing one
+    /// already saved under it.
+    SaveEqPreset(String),
+    /// Forget a saved preset, by name.
+    DeleteEqPreset(String),
     /// The balance, -1 all left to 1 all right.
     SetBalance(f32),
     ToggleMono,
