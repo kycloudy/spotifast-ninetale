@@ -170,10 +170,6 @@ jobs:
     # Publishing waits for the maintainer's approval, and only this job can
     # read the release signing key (v* tags only).
     environment: release-signing
-    env:
-      # A fork without the release signing key publishes unsigned checksums;
-      # the step's own `if` cannot read secrets.
-      HAS_SIGNING_KEY: ${{ secrets.SPOTIFAST_UPDATE_SIGNING_KEY != '' }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -196,12 +192,16 @@ jobs:
           ruby-version: '4.0'
       # Sign the manifest release-names.py wrote (checksums.txt.sig), then
       # check the signature and every listed file against the committed key.
-      # Updaters that carry the key refuse releases without a valid one.
+      # The updater refuses releases without a valid one, so a release
+      # without the key would strand every installed copy: stop instead.
       - name: Sign checksums
-        if: env.HAS_SIGNING_KEY == 'true'
         env:
           SPOTIFAST_UPDATE_SIGNING_KEY: ${{ secrets.SPOTIFAST_UPDATE_SIGNING_KEY }}
         run: |
+          if [ -z "$SPOTIFAST_UPDATE_SIGNING_KEY" ]; then
+            echo "::error::The release-signing environment has no SPOTIFAST_UPDATE_SIGNING_KEY secret. See PACKAGING.md."
+            exit 1
+          fi
           gem install native-packages --version 0.10.0 --no-document
           native-packages sign-checksums dist/checksums.txt \
             --public-key assets/update-public-key.hex \
