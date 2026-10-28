@@ -219,6 +219,34 @@ program install. CI runs it on x64 and arm64.
 `python packaging\windows\test-uninstall.py ISCC.exe` covers the setup
 program's uninstaller.
 
+## Update signing key
+
+The updater installs a release only when `checksums.txt.sig` is a valid
+Ed25519 signature of `checksums.txt` by the key in
+`assets/update-public-key.hex`. The release workflow signs with the
+`SPOTIFAST_UPDATE_SIGNING_KEY` secret of the `release-signing` environment,
+and it stops before it publishes when that secret is missing.
+
+To make a new key pair, run these commands in Git Bash:
+
+```sh
+openssl genpkey -algorithm ed25519 -out update-signing-key.pem
+openssl pkey -in update-signing-key.pem -pubout -outform DER | tail -c 32 | od -An -tx1 | tr -d ' \n'
+```
+
+1. Paste all of `update-signing-key.pem` into the
+   `SPOTIFAST_UPDATE_SIGNING_KEY` secret of the `release-signing`
+   environment (Settings > Environments).
+2. Put the 64 hex digits from the second command in
+   `assets/update-public-key.hex` and commit it.
+3. Keep the `.pem` file offline, or delete it. Never commit it.
+
+A copy of the app trusts only the key it was built with. When you change the
+key, installed copies cannot update to a release signed with the new key, so
+their users must install that release by hand once. When you merge from
+upstream crmne/spotifast, keep this repository's key file: upstream's key
+signs only upstream's releases.
+
 ## Portable archives
 
 The release workflow puts `packaging/spotifast-portable.txt` (contents
