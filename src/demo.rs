@@ -4144,53 +4144,70 @@ mod tests {
             .collect()
     }
 
-    /// The About card ends with the author's credit, and the name opens
-    /// the author's website.
+    /// The About card ends with the credits: the GitHub badge after
+    /// "Toronto" opens the author's profile, the upstream name opens its
+    /// repository, and both versions show.
     #[test]
     fn the_about_card_credits_the_author() {
+        use crate::ui::widgets::{
+            AUTHOR_URL, CREDIT_BADGE_GAP, CREDIT_BADGE_SIZE, UPSTREAM_URL, UPSTREAM_VERSION,
+        };
         let (ctx, mut app) = accessible_app("about-credit");
         settings_text(&ctx, &mut app, "Rust");
         let texts = view_frame(&ctx, &mut app, vec![], crate::ui::settings::show);
-        assert!(
-            texts
-                .iter()
-                .any(|(text, _)| text.contains("Built with love by")),
-            "{texts:?}"
-        );
-        let name = texts
+        for line in [
+            format!("Ninetale v{}", env!("CARGO_PKG_VERSION")),
+            format!("Based on Spotifast v{UPSTREAM_VERSION}"),
+        ] {
+            assert!(
+                texts.iter().any(|(text, _)| *text == line),
+                "{line}: {texts:?}"
+            );
+        }
+        let toronto = texts
             .iter()
-            .find(|(text, _)| text == "Carmine Paolino")
+            .find(|(text, _)| text == " in Toronto")
+            .map(|(_, rect)| *rect)
+            .expect("the place");
+        let badge = egui::pos2(
+            toronto.right() + CREDIT_BADGE_GAP + CREDIT_BADGE_SIZE / 2.0,
+            toronto.center().y,
+        );
+        let upstream = texts
+            .iter()
+            .find(|(text, _)| text == "Spotifast by crmne")
             .map(|(_, rect)| rect.center())
-            .expect("the author's name");
-        app.actions.clear();
-        view_frame(
-            &ctx,
-            &mut app,
-            vec![
-                egui::Event::PointerMoved(name),
-                egui::Event::PointerButton {
-                    pos: name,
-                    button: egui::PointerButton::Primary,
-                    pressed: true,
-                    modifiers: egui::Modifiers::NONE,
-                },
-                egui::Event::PointerButton {
-                    pos: name,
-                    button: egui::PointerButton::Primary,
-                    pressed: false,
-                    modifiers: egui::Modifiers::NONE,
-                },
-            ],
-            crate::ui::settings::show,
-        );
-        assert!(
-            app.actions.iter().any(|action| matches!(
-                action,
-                Action::OpenUrl(url) if url == crate::ui::widgets::AUTHOR_URL
-            )),
-            "{:?}",
-            app.actions
-        );
+            .expect("the upstream project");
+        for (pos, url) in [(badge, AUTHOR_URL), (upstream, UPSTREAM_URL)] {
+            app.actions.clear();
+            view_frame(
+                &ctx,
+                &mut app,
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: false,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+                crate::ui::settings::show,
+            );
+            assert!(
+                app.actions
+                    .iter()
+                    .any(|action| matches!(action, Action::OpenUrl(open) if open == url)),
+                "{url}: {:?}",
+                app.actions
+            );
+        }
         app.backend.shutdown();
     }
 
