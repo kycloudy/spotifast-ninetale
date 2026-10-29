@@ -3431,27 +3431,81 @@ pub fn switch(ui: &mut Ui, palette: &Palette, label: &str, on: &mut bool) -> egu
     response
 }
 
-/// The author's website, linked from the credit line.
-pub const AUTHOR_URL: &str = "https://paolino.me";
+/// The author's GitHub profile, opened by the badge after "Toronto".
+pub const AUTHOR_URL: &str = "https://github.com/kycloudy";
 
-/// "Built with love by Carmine Paolino", with the name linking to
-/// [`AUTHOR_URL`]. Returns whether the name was clicked.
-pub fn credit(ui: &mut Ui, palette: &Palette, locale: Locale) -> bool {
-    // Translators: {name} is replaced by the author's name, shown as a link.
-    let sentence = gettext(locale, "Built with love by {name}");
-    let (before, after) = sentence.split_once("{name}").unwrap_or((&sentence, ""));
-    let mut clicked = false;
+/// The project Ninetale is a fork of.
+pub const UPSTREAM_URL: &str = "https://github.com/crmne/spotifast";
+
+/// The upstream Spotifast release last merged into Ninetale. Bump it with
+/// each upstream sync.
+pub const UPSTREAM_VERSION: &str = "0.14.2";
+
+/// The GitHub badge's edge, and its gap from the word before it.
+pub const CREDIT_BADGE_SIZE: f32 = 14.0;
+pub const CREDIT_BADGE_GAP: f32 = 5.0;
+
+/// The About card's credits: where Ninetale is made, the project it is
+/// based on, and both versions. Returns the URL of a clicked link.
+pub fn credit(ui: &mut Ui, palette: &Palette, locale: Locale) -> Option<&'static str> {
+    let mut clicked = None;
+    // Translators: {heart} is replaced by a heart symbol.
+    let made = gettext(locale, "Made with {heart} in Toronto");
+    let (before, after) = made.split_once("{heart}").unwrap_or((&made, ""));
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        theme::text(ui, before, theme::regular(13.0), palette.secondary);
+        theme::text(ui, "\u{2665}", theme::regular(13.0), palette.danger);
+        theme::text(ui, after, theme::regular(13.0), palette.secondary);
+        ui.add_space(CREDIT_BADGE_GAP);
+        let (rect, response) =
+            ui.allocate_exact_size(Vec2::splat(CREDIT_BADGE_SIZE), Sense::click());
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Link, ui.is_enabled(), "GitHub")
+        });
+        let color = if response.hovered() || response.has_focus() {
+            palette.text
+        } else {
+            palette.secondary
+        };
+        theme::paint_icon(ui, Icon::GitHub, rect, CREDIT_BADGE_SIZE, color);
+        theme::focus_ring(ui, &response);
+        if response
+            .on_hover_text(AUTHOR_URL)
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .clicked()
+        {
+            clicked = Some(AUTHOR_URL);
+        }
+    });
+    // Translators: {project} is replaced by "Spotifast by crmne", shown as a link.
+    let based = gettext(locale, "Based on {project}");
+    let (before, after) = based.split_once("{project}").unwrap_or((&based, ""));
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
-        theme::text(ui, "\u{2665}  ", theme::regular(13.0), palette.danger);
         theme::text(ui, before, theme::regular(13.0), palette.secondary);
-        clicked = theme::link(ui, "Carmine Paolino", theme::medium(13.0), palette.text)
-            .on_hover_text(AUTHOR_URL)
-            .clicked();
+        if theme::link(ui, "Spotifast by crmne", theme::medium(13.0), palette.text)
+            .on_hover_text(UPSTREAM_URL)
+            .clicked()
+        {
+            clicked = Some(UPSTREAM_URL);
+        }
         if !after.is_empty() {
             theme::text(ui, after, theme::regular(13.0), palette.secondary);
         }
     });
+    ui.add_space(8.0);
+    theme::text(
+        ui,
+        format!(
+            "Ninetale v{} \u{2022} {}",
+            env!("CARGO_PKG_VERSION"),
+            // Translators: {version} is the upstream Spotifast version, such as 0.14.2.
+            gettext(locale, "Based on Spotifast v{version}").replace("{version}", UPSTREAM_VERSION)
+        ),
+        theme::regular(12.5),
+        palette.secondary,
+    );
     clicked
 }
 

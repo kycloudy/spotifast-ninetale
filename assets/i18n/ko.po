@@ -3735,3 +3735,19 @@ msgstr "인사말 편집"
 #: src/ui/home.rs:66
 msgid "Greeting"
 msgstr "인사말"
+
+#: src/ui/settings.rs:1106
+msgid "Art style"
+msgstr "아트 스타일"
+
+#: src/ui/settings.rs:1241
+msgid "How the art behind page headers and full-screen lyrics is drawn."
+msgstr "페이지 헤더와 전체 화면 가사 뒤에 아트를 그리는 방식입니다."
+
+#: src/ui/settings.rs:1403
+msgid "Dither"
+msgstr "디더링"
+
+#: src/ui/settings.rs:1404
+msgid "ASCII"
+msgstr "ASCII"

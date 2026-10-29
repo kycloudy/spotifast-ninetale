@@ -3837,3 +3837,19 @@ msgstr "Modifica saluto"
 #: src/ui/home.rs:66
 msgid "Greeting"
 msgstr "Saluto"
+
+#: src/ui/settings.rs:1106
+msgid "Art style"
+msgstr "Stile dell'immagine"
+
+#: src/ui/settings.rs:1241
+msgid "How the art behind page headers and full-screen lyrics is drawn."
+msgstr "Come viene disegnata l'immagine dietro le intestazioni e il testo a schermo intero."
+
+#: src/ui/settings.rs:1403
+msgid "Dither"
+msgstr "Retinato"
+
+#: src/ui/settings.rs:1404
+msgid "ASCII"
+msgstr "ASCII"

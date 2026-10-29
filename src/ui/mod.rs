@@ -441,6 +441,8 @@ fn central(app: &mut App, ui: &mut egui::Ui) {
                     opacity,
                     fade_to_bottom: true,
                     corner_radius: 0,
+                    style: app.settings.art_style,
+                    drift: None,
                 },
             );
             if dither_art.is_some() && opacity > 0.0 {
