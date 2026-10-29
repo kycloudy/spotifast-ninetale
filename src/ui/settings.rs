@@ -2307,7 +2307,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let source_code = gettext(locale, "Source code");
     let about_rows = [
         RowText::new(
-            format!("Spotifast {}", env!("CARGO_PKG_VERSION")),
+            format!(
+                "Ninetale v{} Spotifast v{}",
+                env!("CARGO_PKG_VERSION"),
+                widgets::UPSTREAM_VERSION
+            ),
             built_with.clone(),
         ),
         RowText::new(
@@ -2322,12 +2326,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 let (logo, _) = ui.allocate_exact_size(Vec2::splat(40.0), egui::Sense::hover());
                 theme::logo(ui, logo.center(), 40.0);
                 ui.vertical(|ui| {
-                    theme::text(
-                        ui,
-                        format!("Spotifast {}", env!("CARGO_PKG_VERSION")),
-                        theme::semibold(15.0),
-                        palette.text,
-                    );
+                    theme::text(ui, "Ninetale", theme::semibold(15.0), palette.text);
                     theme::text(
                         ui,
                         built_with.as_ref(),
@@ -2375,9 +2374,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 }
             });
             ui.add_space(14.0);
-            if widgets::credit(ui, &palette, locale) {
-                app.actions
-                    .push(Action::OpenUrl(widgets::AUTHOR_URL.to_owned()));
+            if let Some(url) = widgets::credit(ui, &palette, locale) {
+                app.actions.push(Action::OpenUrl(url.to_owned()));
             }
         });
     }

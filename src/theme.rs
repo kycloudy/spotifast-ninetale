@@ -499,6 +499,7 @@ fastframe_icons::icons! {
         EyeOff => "eye-off",
         ExternalLink => lucide "external-link",
         Gamepad => "gamepad-2",
+        GitHub => "github",
         Globe => "globe",
         GripVertical => "grip-vertical",
         Headphones => "headphones",
