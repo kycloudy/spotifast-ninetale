@@ -3561,3 +3561,19 @@ msgstr ""
 #: src/ui/home.rs:66
 msgid "Greeting"
 msgstr ""
+
+#: src/ui/settings.rs:1106
+msgid "Art style"
+msgstr ""
+
+#: src/ui/settings.rs:1241
+msgid "How the art behind page headers and full-screen lyrics is drawn."
+msgstr ""
+
+#: src/ui/settings.rs:1403
+msgid "Dither"
+msgstr ""
+
+#: src/ui/settings.rs:1404
+msgid "ASCII"
+msgstr ""

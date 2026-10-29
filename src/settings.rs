@@ -97,6 +97,17 @@ impl HomeSettings {
     }
 }
 
+/// How cover art is drawn behind page headers and full-screen lyrics.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ArtStyle {
+    /// A field of ordered-dither dots.
+    #[default]
+    Dither,
+    /// Text characters, denser where the art is brighter.
+    Ascii,
+}
+
 /// What moves behind the player bar's controls.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -331,6 +342,8 @@ pub struct Settings {
     pub accent_from_art: bool,
     /// Draw the cover behind a page's header as a field of dithered dots.
     pub dither_headers: bool,
+    /// How the art behind page headers and full-screen lyrics is drawn.
+    pub art_style: ArtStyle,
     /// A spectrum or waveform of the playing song behind the player bar.
     pub player_bar_vis: PlayerBarVis,
     /// Allow clicks on the player bar background to cycle visualizer modes.
@@ -521,6 +534,7 @@ impl Default for Settings {
             home: HomeSettings::default(),
             accent_from_art: true,
             dither_headers: true,
+            art_style: ArtStyle::Dither,
             player_bar_vis: PlayerBarVis::Off,
             player_bar_vis_click: true,
             visualizer_fps: crate::milkdrop::DEFAULT_FPS,

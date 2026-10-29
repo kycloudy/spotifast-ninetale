@@ -3,13 +3,20 @@
 //! The page's cover, or the playing song's art on pages without one, is
 //! drawn as an ordered (Bayer) dither of coloured dots that thin out toward
 //! the page below. Each dot is two physical pixels, so the texture is made
-//! for the header's size on screen rather than scaled from the cover.
+//! for the header's size on screen rather than scaled from the cover. The
+//! ASCII style draws the same tones as text characters instead, one small
+//! bitmap glyph a cell, denser where the art is brighter.
+//!
+//! The full-screen lyrics backdrop can drift: the cover slowly zooms, pans
+//! and ripples, and each moment is drawn again, so the dots or characters
+//! move with it.
 //!
 //! Fetching, decoding and dithering all run on the art loader's runtime.
 //! The header keeps showing the last texture, stretched if the window was
 //! resized, until the new one is ready, and a new cover fades in over the
 //! old one, so a change of page or song never flashes the plain background.
 
+use std::f32::consts::TAU;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use std::time::{Duration, Instant};
@@ -17,6 +24,7 @@ use std::time::{Duration, Instant};
 use egui::{Color32, ColorImage, Rect, TextureHandle, TextureOptions, pos2};
 
 use crate::images::ArtLoader;
+use crate::settings::ArtStyle;
 
 /// One dot, in physical pixels.
 pub const DOT: f32 = 2.0;
@@ -34,6 +42,49 @@ const RETRY: Duration = Duration::from_secs(3);
 /// The most of the header's dots a cover may light on average, before the
 /// fade toward the page: a brighter cover's dots are thinned to this.
 const MAX_MEAN_VALUE: f32 = 0.42;
+
+/// How many moments a second a drifting backdrop is drawn.
+const DRIFT_FPS: f64 = 20.0;
+
+/// One ASCII cell, in points: a 5 by 7 glyph with a column and two rows of
+/// space. The texture holds one texel a point.
+pub const GLYPH_CELL: [usize; 2] = [6, 9];
+const MAX_GLYPH_COLUMNS: usize = 680;
+const MAX_GLYPH_ROWS: usize = 455;
+/// A glyph lights less of its cell than a dot does, so its ink is stronger.
+const GLYPH_GAIN: f32 = 1.7;
+
+/// The ASCII ramp from faint to dense, `. : - = + * # % @`, each row of a
+/// glyph five bits wide with the leftmost pixel in the highest bit.
+const RAMP: [[u8; 7]; 9] = [
+    [
+        0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00100,
+    ],
+    [
+        0b00000, 0b00000, 0b00100, 0b00000, 0b00000, 0b00100, 0b00000,
+    ],
+    [
+        0b00000, 0b00000, 0b00000, 0b01110, 0b00000, 0b00000, 0b00000,
+    ],
+    [
+        0b00000, 0b00000, 0b01110, 0b00000, 0b01110, 0b00000, 0b00000,
+    ],
+    [
+        0b00000, 0b00100, 0b00100, 0b11111, 0b00100, 0b00100, 0b00000,
+    ],
+    [
+        0b00000, 0b10101, 0b01110, 0b11111, 0b01110, 0b10101, 0b00000,
+    ],
+    [
+        0b01010, 0b01010, 0b11111, 0b01010, 0b11111, 0b01010, 0b01010,
+    ],
+    [
+        0b11001, 0b11010, 0b00010, 0b00100, 0b01000, 0b01011, 0b10011,
+    ],
+    [
+        0b01110, 0b10001, 0b10111, 0b10101, 0b10111, 0b10000, 0b01110,
+    ],
+];
 
 const BAYER: [[u8; 4]; 4] = [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]];
 
@@ -106,6 +157,9 @@ struct Key {
     dark: bool,
     strength: u8,
     fade_to_bottom: bool,
+    style: ArtStyle,
+    /// The moment of a drifting backdrop, counted in frames; None is still.
+    frame: Option<u64>,
 }
 
 /// How far down the header a dot can still appear: all of it at the top,
@@ -141,13 +195,45 @@ fn raster_with_fade(
     strength: f32,
     fade_to_bottom: bool,
 ) -> ColorImage {
-    let alpha = (strength.clamp(0.0, 1.0) * 255.0).round() as u8;
-    let mut dots = Vec::with_capacity(columns * rows);
+    let tones = tones(source, columns, rows, dark, None);
+    dots(&tones, columns, rows, strength, fade_to_bottom)
+}
+
+/// The texture for `key`, in its style and at its moment.
+fn render(source: &Source, key: &Key, strength: f32) -> ColorImage {
+    let time = key.frame.map(|frame| (frame as f64 / DRIFT_FPS) as f32);
+    let tones = tones(source, key.columns, key.rows, key.dark, time);
+    match key.style {
+        ArtStyle::Dither => dots(&tones, key.columns, key.rows, strength, key.fade_to_bottom),
+        ArtStyle::Ascii => glyphs(&tones, key.columns, key.rows, strength, key.fade_to_bottom),
+    }
+}
+
+/// Each cell's tone: how strongly it shows, from 0 to 1, and its colour.
+///
+/// Dark: a cell shows where the cover is bright, in the cover's colour at
+/// full brightness, as in Zeron's dither. Light: a cell shows where the
+/// cover is darker or more colourful than paper, in the cover's colour held
+/// dark enough to read on white. At a `time`, the cover is sampled where it
+/// has drifted to by then.
+fn tones(
+    source: &Source,
+    columns: usize,
+    rows: usize,
+    dark: bool,
+    time: Option<f32>,
+) -> Vec<(f32, [f32; 3])> {
+    let drift = time.map(|time| Drift::new(columns, rows, time));
+    let mut tones = Vec::with_capacity(columns * rows);
     for row in 0..rows {
         for column in 0..columns {
-            let [r, g, b] = source.sample(columns, rows, column as f32 + 0.5, row as f32 + 0.5);
+            let (x, y) = match &drift {
+                Some(drift) => drift.at(column, row),
+                None => (column as f32 + 0.5, row as f32 + 0.5),
+            };
+            let [r, g, b] = source.sample(columns, rows, x, y);
             let (max, min) = (r.max(g).max(b), r.min(g).min(b));
-            dots.push(if dark {
+            tones.push(if dark {
                 let gain = 255.0 / max.max(1.0);
                 (max / 255.0, [r * gain, g * gain, b * gain])
             } else {
@@ -162,28 +248,129 @@ fn raster_with_fade(
             });
         }
     }
-    // A bright cover in the dark, or a dark one in the light, would light
-    // nearly every dot and drown the header's text: such a cover's dots are
-    // thinned until it lights no more of them than a moderate cover does.
-    let mean = dots.iter().map(|(value, _)| value).sum::<f32>() / dots.len().max(1) as f32;
-    let thinning = if mean > MAX_MEAN_VALUE {
+    tones
+}
+
+/// A bright cover in the dark, or a dark one in the light, would light
+/// nearly every cell and drown the header's text: such a cover's tones are
+/// thinned until it lights no more of them than a moderate cover does.
+fn thinning(tones: &[(f32, [f32; 3])]) -> f32 {
+    let mean = tones.iter().map(|(value, _)| value).sum::<f32>() / tones.len().max(1) as f32;
+    if mean > MAX_MEAN_VALUE {
         MAX_MEAN_VALUE / mean
     } else {
         1.0
-    };
+    }
+}
+
+fn ink([r, g, b]: [f32; 3], alpha: u8) -> Color32 {
+    let [r, g, b] = [r, g, b].map(|channel| channel.round().clamp(0.0, 255.0) as u8);
+    Color32::from_rgba_unmultiplied(r, g, b, alpha)
+}
+
+/// One dot a cell, lit where its tone passes the Bayer threshold. Unlit
+/// dots are transparent, so the page's own background shows between them.
+fn dots(
+    tones: &[(f32, [f32; 3])],
+    columns: usize,
+    rows: usize,
+    strength: f32,
+    fade_to_bottom: bool,
+) -> ColorImage {
+    let alpha = (strength.clamp(0.0, 1.0) * 255.0).round() as u8;
+    let thinning = thinning(tones);
     let mut pixels = vec![Color32::TRANSPARENT; columns * rows];
     for row in 0..rows {
         let fade = if fade_to_bottom { fade(row, rows) } else { 1.0 } * thinning;
         for column in 0..columns {
-            let (value, color) = dots[row * columns + column];
+            let (value, color) = tones[row * columns + column];
             let threshold = (BAYER[row % 4][column % 4] as f32 + 0.5) / 16.0;
             if value * fade > threshold {
-                let [r, g, b] = color.map(|channel| channel.round().clamp(0.0, 255.0) as u8);
-                pixels[row * columns + column] = Color32::from_rgba_unmultiplied(r, g, b, alpha);
+                pixels[row * columns + column] = ink(color, alpha);
             }
         }
     }
     ColorImage::new([columns, rows], pixels)
+}
+
+/// One glyph a cell, from the ramp by its tone: none for the faintest.
+fn glyphs(
+    tones: &[(f32, [f32; 3])],
+    columns: usize,
+    rows: usize,
+    strength: f32,
+    fade_to_bottom: bool,
+) -> ColorImage {
+    let alpha = ((strength * GLYPH_GAIN).clamp(0.0, 1.0) * 255.0).round() as u8;
+    let thinning = thinning(tones);
+    let [cell_width, cell_height] = GLYPH_CELL;
+    let width = columns * cell_width;
+    let mut pixels = vec![Color32::TRANSPARENT; width * rows * cell_height];
+    for row in 0..rows {
+        let fade = if fade_to_bottom { fade(row, rows) } else { 1.0 } * thinning;
+        for column in 0..columns {
+            let (value, color) = tones[row * columns + column];
+            let level = ((value * fade).clamp(0.0, 1.0) * (RAMP.len() + 1) as f32) as usize;
+            let Some(glyph) = level
+                .checked_sub(1)
+                .map(|index| RAMP[index.min(RAMP.len() - 1)])
+            else {
+                continue;
+            };
+            let color = ink(color, alpha);
+            for (y, bits) in glyph.iter().enumerate() {
+                let line = (row * cell_height + 1 + y) * width + column * cell_width;
+                for x in 0..5 {
+                    if bits & (0b10000 >> x) != 0 {
+                        pixels[line + x] = color;
+                    }
+                }
+            }
+        }
+    }
+    ColorImage::new([width, rows * cell_height], pixels)
+}
+
+/// Where a drifting backdrop samples the cover at one moment: it breathes
+/// in and out, wanders a little and ripples, each on its own slow period,
+/// so it never visibly repeats.
+struct Drift {
+    centre: (f32, f32),
+    zoom: f32,
+    pan: (f32, f32),
+    /// Each row's sideways ripple, and each column's up-and-down one.
+    across: Vec<f32>,
+    down: Vec<f32>,
+}
+
+impl Drift {
+    fn new(columns: usize, rows: usize, time: f32) -> Self {
+        let (width, height) = (columns as f32, rows as f32);
+        let wave = |period: f32| (time * TAU / period).sin();
+        Self {
+            centre: (width * 0.5, height * 0.5),
+            zoom: 1.1 + 0.05 * wave(19.0),
+            pan: (0.03 * width * wave(23.0), 0.03 * height * wave(29.0)),
+            across: (0..rows)
+                .map(|row| {
+                    0.012 * width * ((row as f32 + 0.5) / height * TAU * 1.5 + time * 0.9).sin()
+                })
+                .collect(),
+            down: (0..columns)
+                .map(|column| {
+                    0.012 * height * ((column as f32 + 0.5) / width * TAU * 1.2 + time * 0.7).sin()
+                })
+                .collect(),
+        }
+    }
+
+    fn at(&self, column: usize, row: usize) -> (f32, f32) {
+        let (x, y) = (column as f32 + 0.5, row as f32 + 0.5);
+        (
+            self.centre.0 + (x - self.centre.0) / self.zoom + self.pan.0 + self.across[row],
+            self.centre.1 + (y - self.centre.1) / self.zoom + self.pan.1 + self.down[column],
+        )
+    }
 }
 
 /// The dither's grid for a header of `rect` at `pixels_per_point`.
@@ -194,6 +381,23 @@ pub fn grid(rect: Rect, pixels_per_point: f32) -> (usize, usize) {
         dots(rect.width(), MAX_COLUMNS),
         dots(rect.height(), MAX_ROWS),
     )
+}
+
+/// The cells of `style` that cover `rect`: two-pixel dots, or glyph cells
+/// sized in points.
+fn cells(style: ArtStyle, rect: Rect, pixels_per_point: f32) -> (usize, usize) {
+    match style {
+        ArtStyle::Dither => grid(rect, pixels_per_point),
+        ArtStyle::Ascii => {
+            let cells = |points: f32, cell: usize, max: usize| {
+                ((points / cell as f32).ceil() as usize).clamp(1, max)
+            };
+            (
+                cells(rect.width(), GLYPH_CELL[0], MAX_GLYPH_COLUMNS),
+                cells(rect.height(), GLYPH_CELL[1], MAX_GLYPH_ROWS),
+            )
+        }
+    }
 }
 
 type Decoded = Option<Source>;
@@ -225,6 +429,11 @@ pub struct Look {
     pub fade_to_bottom: bool,
     /// Clips the artwork to the backdrop's rounded frame.
     pub corner_radius: u8,
+    /// Dots or text characters.
+    pub style: ArtStyle,
+    /// None keeps the art still. Some drifts it: true moves it on, false
+    /// holds the moment it reached.
+    pub drift: Option<bool>,
 }
 
 impl DitherHero {
@@ -244,12 +453,28 @@ impl DitherHero {
             opacity,
             fade_to_bottom,
             corner_radius,
+            style,
+            drift,
         } = look;
         let ctx = ui.ctx().clone();
         self.receive(&ctx);
         if let Some(uri) = uri {
             self.decode(&ctx, loader, uri);
-            let (columns, rows) = grid(rect, ctx.pixels_per_point());
+            let (columns, rows) = cells(style, rect, ctx.pixels_per_point());
+            let frame = match drift {
+                None => None,
+                Some(true) => {
+                    ctx.request_repaint_after(Duration::from_secs_f64(1.0 / DRIFT_FPS));
+                    Some((ctx.input(|input| input.time) * DRIFT_FPS) as u64)
+                }
+                Some(false) => Some(
+                    self.current
+                        .as_ref()
+                        .filter(|(shown, _)| shown.uri == uri)
+                        .and_then(|(shown, _)| shown.frame)
+                        .unwrap_or(0),
+                ),
+            };
             let key = Key {
                 uri: uri.to_owned(),
                 columns,
@@ -257,6 +482,8 @@ impl DitherHero {
                 dark,
                 strength: (strength.clamp(0.0, 1.0) * 255.0) as u8,
                 fade_to_bottom,
+                style,
+                frame,
             };
             self.raster(&ctx, loader, key, strength);
         }
@@ -321,17 +548,23 @@ impl DitherHero {
             match receiver.try_recv() {
                 Ok((key, image)) => {
                     self.rastering = None;
-                    let texture = ctx.load_texture("dither-hero", image, TextureOptions::NEAREST);
                     // New art fades in over the old; the same art at a new
-                    // size or strength takes its place at once.
-                    let fades = self
-                        .current
-                        .as_ref()
-                        .is_none_or(|(shown, _)| shown.uri != key.uri || shown.dark != key.dark);
-                    let old = self.current.replace((key, texture));
-                    if fades {
-                        self.previous = old.map(|(_, texture)| texture);
-                        self.shown_at = Some(Instant::now());
+                    // size, strength, style or moment takes its place at
+                    // once, in the same texture.
+                    match &mut self.current {
+                        Some((shown, texture))
+                            if shown.uri == key.uri && shown.dark == key.dark =>
+                        {
+                            texture.set(image, TextureOptions::NEAREST);
+                            *shown = key;
+                        }
+                        current => {
+                            let texture =
+                                ctx.load_texture("dither-hero", image, TextureOptions::NEAREST);
+                            let old = current.replace((key, texture));
+                            self.previous = old.map(|(_, texture)| texture);
+                            self.shown_at = Some(Instant::now());
+                        }
                     }
                 }
                 Err(TryRecvError::Disconnected) => self.rastering = None,
@@ -380,14 +613,7 @@ impl DitherHero {
         self.rastering = Some(rx);
         let ctx = ctx.clone();
         loader.spawn_blocking(move || {
-            let image = raster_with_fade(
-                &source,
-                key.columns,
-                key.rows,
-                key.dark,
-                strength,
-                key.fade_to_bottom,
-            );
+            let image = render(&source, &key, strength);
             let _ = tx.send((key, image));
             ctx.request_repaint();
         });
@@ -527,6 +753,75 @@ mod tests {
         assert_eq!(grid(rect, 2.0), (800, 340));
         let huge = Rect::from_min_size(pos2(0.0, 0.0), egui::vec2(9000.0, 9000.0));
         assert_eq!(grid(huge, 2.0), (MAX_COLUMNS, MAX_ROWS));
+    }
+
+    fn key(style: ArtStyle, columns: usize, rows: usize, frame: Option<u64>) -> Key {
+        Key {
+            uri: "https://art".to_owned(),
+            columns,
+            rows,
+            dark: true,
+            strength: 255,
+            fade_to_bottom: false,
+            style,
+            frame,
+        }
+    }
+
+    #[test]
+    fn ascii_draws_a_glyph_cell_per_tone_denser_where_brighter() {
+        let ink = |rgb: [u8; 3]| {
+            let image = render(&flat(rgb), &key(ArtStyle::Ascii, 8, 4, None), 0.5);
+            assert_eq!(image.size, [8 * GLYPH_CELL[0], 4 * GLYPH_CELL[1]]);
+            lit(&image)
+        };
+        assert_eq!(ink([0, 0, 0]), 0, "black draws no characters");
+        let dim = ink([40, 30, 50]);
+        let moderate = ink([100, 60, 105]);
+        assert!(dim > 0 && moderate > dim, "{dim} against {moderate}");
+    }
+
+    #[test]
+    fn ascii_glyphs_wear_the_covers_colour_with_stronger_ink() {
+        let image = render(&flat([100, 50, 0]), &key(ArtStyle::Ascii, 4, 4, None), 0.3);
+        let glyph = image.pixels.iter().find(|pixel| pixel.a() > 0).unwrap();
+        let [r, g, b, a] = glyph.to_srgba_unmultiplied();
+        assert_eq!([r, g, b], [255, 128, 0]);
+        assert_eq!(a, (0.3 * GLYPH_GAIN * 255.0_f32).round() as u8);
+    }
+
+    #[test]
+    fn ascii_cells_are_sized_in_points_and_bounded() {
+        let rect = Rect::from_min_size(pos2(0.0, 0.0), egui::vec2(600.0, 90.0));
+        assert_eq!(cells(ArtStyle::Ascii, rect, 1.0), (100, 10));
+        assert_eq!(cells(ArtStyle::Ascii, rect, 2.0), (100, 10));
+        assert_eq!(cells(ArtStyle::Dither, rect, 1.0), grid(rect, 1.0));
+        let huge = Rect::from_min_size(pos2(0.0, 0.0), egui::vec2(9000.0, 9000.0));
+        assert_eq!(
+            cells(ArtStyle::Ascii, huge, 1.0),
+            (MAX_GLYPH_COLUMNS, MAX_GLYPH_ROWS)
+        );
+    }
+
+    #[test]
+    fn a_drifting_backdrop_moves_between_moments() {
+        // Left half red, right half blue: drifting moves the edge between
+        // them, so the dots change from one moment to the next.
+        let mut pixels = Vec::new();
+        for _ in 0..8 {
+            pixels.extend([[255, 0, 0]; 4]);
+            pixels.extend([[0, 0, 255]; 4]);
+        }
+        let source = Source::from_rgb(8, 8, pixels).unwrap();
+        for style in [ArtStyle::Dither, ArtStyle::Ascii] {
+            let at = |frame| render(&source, &key(style, 64, 32, frame), 1.0);
+            assert_eq!(
+                at(Some(40)).pixels,
+                at(Some(40)).pixels,
+                "a moment is repeatable"
+            );
+            assert_ne!(at(Some(40)).pixels, at(Some(80)).pixels, "{style:?} drifts");
+        }
     }
 
     #[test]

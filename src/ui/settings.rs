@@ -1103,6 +1103,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let themes_folder = gettext(locale, "Open themes folder");
     let accent_from_art = gettext(locale, "Colour from album art");
     let dither_headers = gettext(locale, "Dithered page headers");
+    let art_style = gettext(locale, "Art style");
     let sidebar_compact = gettext(locale, "Compact library sidebar");
     let tracklist_compact = gettext(locale, "Compact track list");
     let middle_click = gettext(locale, "Middle-click autoscroll");
@@ -1233,6 +1234,13 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             ),
         )
         .when(app.settings.accent_from_art),
+        RowText::new(
+            art_style.clone(),
+            gettext(
+                locale,
+                "How the art behind page headers and full-screen lyrics is drawn.",
+            ),
+        ),
     ];
     if section_matches(&needle, &appearance, &appearance_rows) {
         any_visible = true;
@@ -1389,6 +1397,48 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     }
                 },
             );
+            {
+                use crate::settings::ArtStyle;
+                let choices = [
+                    (ArtStyle::Dither, gettext(locale, "Dither")),
+                    (ArtStyle::Ascii, gettext(locale, "ASCII")),
+                ];
+                let choice_gap = 6.0;
+                let choices_width = choices
+                    .iter()
+                    .map(|(_, label)| theme::soft_button_width(ui, label))
+                    .sum::<f32>()
+                    + choice_gap * (choices.len() - 1) as f32;
+                filtered_row_sized(
+                    ui,
+                    &palette,
+                    &needle,
+                    &appearance,
+                    &appearance_rows[14],
+                    choices_width,
+                    |ui| {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = choice_gap;
+                            // Laid right to left, so the last choice goes first.
+                            for (style, label) in choices.iter().rev() {
+                                if theme::soft_button(
+                                    ui,
+                                    &palette,
+                                    None,
+                                    label,
+                                    app.settings.art_style == *style,
+                                )
+                                .clicked()
+                                    && app.settings.art_style != *style
+                                {
+                                    app.settings.art_style = *style;
+                                    changed = true;
+                                }
+                            }
+                        });
+                    },
+                );
+            }
             {
                 use crate::settings::PlayerBarVis;
                 let choices = [

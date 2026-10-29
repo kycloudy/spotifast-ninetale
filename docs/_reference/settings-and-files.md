@@ -353,6 +353,7 @@ main fields are:
 | `theme_pair` | absent | The themes Follow system uses in light and dark mode: `{"light": {"filename": "Catppuccin Latte.json", "palette": {...}}, "dark": {...}}`. Each `palette` is the last accepted copy of that file's colours. A missing side, or the whole field, is Spotifast's own Light or Dark; it is written only once you choose one |
 | `accent_from_art` | `true` | Tint pages with album art, and colour the player bar visualizer with the cover's colours |
 | `dither_headers` | `true` | Draw the page's cover, or the playing song's art, behind the page title as dithered dots. Has no effect while `accent_from_art` is off |
+| `art_style` | `dither` | How the art behind page headers and full-screen lyrics is drawn: `dither` (dots) or `ascii` (text characters). While the window is in focus, the full-screen lyrics art drifts slowly, unless the system asks for less motion or saves energy |
 | `player_bar_vis` | `off` | Since 0.11.0: what moves behind the player bar while a song plays on this computer: `off`, `spectrum` or `waveform` |
 | `player_bar_vis_click` | `true` | Allow clicks on empty player bar space to cycle visualizer modes |
 | `visualizer_fps` | `60` | Frame rate of the player bar and mini player visualizers; `0` is uncapped. Half that out of focus, at most 30 while the system saves energy, none while the window is hidden. MilkDrop uses `milkdrop_fps` |
