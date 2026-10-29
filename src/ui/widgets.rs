@@ -3497,14 +3497,12 @@ pub fn credit(ui: &mut Ui, palette: &Palette, locale: Locale) -> Option<&'static
     ui.add_space(8.0);
     theme::text(
         ui,
-        format!("Ninetale v{}", env!("CARGO_PKG_VERSION")),
-        theme::medium(12.5),
-        palette.secondary,
-    );
-    theme::text(
-        ui,
-        // Translators: {version} is the upstream Spotifast version, such as 0.14.2.
-        gettext(locale, "Based on Spotifast v{version}").replace("{version}", UPSTREAM_VERSION),
+        format!(
+            "Ninetale v{} \u{2022} {}",
+            env!("CARGO_PKG_VERSION"),
+            // Translators: {version} is the upstream Spotifast version, such as 0.14.2.
+            gettext(locale, "Based on Spotifast v{version}").replace("{version}", UPSTREAM_VERSION)
+        ),
         theme::regular(12.5),
         palette.secondary,
     );

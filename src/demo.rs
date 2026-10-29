@@ -4155,15 +4155,14 @@ mod tests {
         let (ctx, mut app) = accessible_app("about-credit");
         settings_text(&ctx, &mut app, "Rust");
         let texts = view_frame(&ctx, &mut app, vec![], crate::ui::settings::show);
-        for line in [
-            format!("Ninetale v{}", env!("CARGO_PKG_VERSION")),
-            format!("Based on Spotifast v{UPSTREAM_VERSION}"),
-        ] {
-            assert!(
-                texts.iter().any(|(text, _)| *text == line),
-                "{line}: {texts:?}"
-            );
-        }
+        let versions = format!(
+            "Ninetale v{} \u{2022} Based on Spotifast v{UPSTREAM_VERSION}",
+            env!("CARGO_PKG_VERSION")
+        );
+        assert!(
+            texts.iter().any(|(text, _)| *text == versions),
+            "{versions}: {texts:?}"
+        );
         let toronto = texts
             .iter()
             .find(|(text, _)| text == " in Toronto")
