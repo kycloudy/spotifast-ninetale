@@ -578,6 +578,7 @@ fn background(app: &mut App, ui: &mut egui::Ui, rect: Rect) {
     ui.painter()
         .rect_filled(rect, BACKDROP_RADIUS, theme::Palette::dark().panel);
     let loader = app.backend.art().clone();
+    let style = app.settings.art_style;
     app.lyrics_backdrop.paint(
         ui,
         &loader,
@@ -589,8 +590,17 @@ fn background(app: &mut App, ui: &mut egui::Ui, rect: Rect) {
             opacity: 1.0,
             fade_to_bottom: false,
             corner_radius: BACKDROP_RADIUS,
+            style,
+            drift: Some(backdrop_drifts(app.budget, app.motion.reduced())),
         },
     );
+}
+
+/// Whether the backdrop's art moves on: only while the window is in focus,
+/// the system is not saving energy, and nobody asked for less motion.
+/// Otherwise it holds where it was.
+fn backdrop_drifts(budget: crate::power::Budget, reduced_motion: bool) -> bool {
+    budget == crate::power::Budget::Normal && !reduced_motion
 }
 
 fn fullscreen_header(app: &mut App, ui: &mut egui::Ui) {
@@ -870,7 +880,7 @@ fn fullscreen_contents(app: &mut App, ui: &mut egui::Ui) {
 
 #[cfg(test)]
 mod tests {
-    use super::{backdrop_rect, fullscreen_content_width, preferred_backdrop_art};
+    use super::{backdrop_drifts, backdrop_rect, fullscreen_content_width, preferred_backdrop_art};
 
     #[test]
     fn the_letterboxed_backdrop_is_inset_and_centred_at_every_size() {
@@ -905,6 +915,24 @@ mod tests {
             Some(large)
         );
         assert_eq!(preferred_backdrop_art(None, None), None);
+    }
+
+    #[test]
+    fn the_backdrop_drifts_only_in_focus_with_motion_allowed() {
+        use crate::power::Budget;
+        assert!(backdrop_drifts(Budget::Normal, false));
+        assert!(
+            !backdrop_drifts(Budget::Normal, true),
+            "less motion asked for"
+        );
+        assert!(
+            !backdrop_drifts(Budget::Saver, false),
+            "out of focus or saving energy"
+        );
+        assert!(
+            !backdrop_drifts(Budget::Background, false),
+            "nobody can see it"
+        );
     }
 
     #[test]

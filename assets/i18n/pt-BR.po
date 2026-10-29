@@ -3819,3 +3819,19 @@ msgstr "Editar saudação"
 #: src/ui/home.rs:66
 msgid "Greeting"
 msgstr "Saudação"
+
+#: src/ui/settings.rs:1106
+msgid "Art style"
+msgstr "Estilo da arte"
+
+#: src/ui/settings.rs:1241
+msgid "How the art behind page headers and full-screen lyrics is drawn."
+msgstr "Como a arte é desenhada atrás dos cabeçalhos e da letra em tela cheia."
+
+#: src/ui/settings.rs:1403
+msgid "Dither"
+msgstr "Pontilhado"
+
+#: src/ui/settings.rs:1404
+msgid "ASCII"
+msgstr "ASCII"
