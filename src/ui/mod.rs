@@ -22,6 +22,7 @@ pub mod search;
 pub mod settings;
 pub mod show;
 pub mod sidebar;
+mod soloist;
 pub mod topbar;
 mod update;
 pub mod widgets;
@@ -49,6 +50,30 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         player_bar::end_tint_session(ctx);
         login::show(app, ui, connecting);
         update::show(app, ctx);
+        toasts(app, ctx, 20.0);
+        caption_buttons(ui, &app.palette, app.locale);
+        fastframe_titlebar::resize(ui);
+        return;
+    }
+    if app.soloist_waiting()
+        && !app.show_soloist_onboarding()
+        && matches!(
+            app.soloist_status,
+            crate::soloist::Status::Off
+                | crate::soloist::Status::Starting
+                | crate::soloist::Status::Ready { .. }
+        )
+    {
+        player_bar::end_tint_session(ctx);
+        login::show(app, ui, true);
+        toasts(app, ctx, 20.0);
+        caption_buttons(ui, &app.palette, app.locale);
+        fastframe_titlebar::resize(ui);
+        return;
+    }
+    if app.show_soloist_onboarding() || app.soloist_waiting() {
+        player_bar::end_tint_session(ctx);
+        soloist::onboarding(app, ui);
         toasts(app, ctx, 20.0);
         caption_buttons(ui, &app.palette, app.locale);
         fastframe_titlebar::resize(ui);
@@ -409,7 +434,11 @@ fn central(app: &mut App, ui: &mut egui::Ui) {
                 page,
                 Page::Home | Page::Search | Page::Settings | Page::Queue
             );
-            if let Some((top, bottom)) = header_wash(&palette, quiet, tint) {
+            let countdown = matches!(&page, Page::Album(id)
+                if app.album_pages.get(id).is_some_and(|page| page.prerelease.is_some()));
+            // Countdown pages own their hero gradient. The generic artwork wash
+            // otherwise leaves an unrelated color band behind the search bar.
+            if !countdown && let Some((top, bottom)) = header_wash(&palette, quiet, tint) {
                 widgets::paint_vertical_gradient(ui, header, top, bottom);
             }
             // The dots sit over the tint, softer on pages whose header is

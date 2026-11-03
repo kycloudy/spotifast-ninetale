@@ -1,6 +1,6 @@
 //! The Settings page.
 
-use egui::{Align, CornerRadius, Frame, Layout, Margin, Stroke, Vec2};
+use egui::{Align, CornerRadius, Frame, Layout, Margin, Stroke, Vec2, vec2};
 
 use crate::api::models::pick_image;
 use crate::app::App;
@@ -8,6 +8,7 @@ use crate::i18n::{gettext, ngettext, pgettext};
 use crate::model::{Action, Dialog};
 use crate::settings::{LanguageChoice, ProxyMode, ThemeChoice};
 use crate::theme::{self, Icon, Palette};
+use crate::winamp::SkinKind;
 
 use super::widgets;
 
@@ -305,6 +306,38 @@ fn frame_rate_dial(
     }
 }
 
+/// A line of explanation under a skin part's title, wrapped to the width
+/// like a setting row's description.
+fn skin_note(ui: &mut egui::Ui, palette: &Palette, text: &str) {
+    ui.add(
+        egui::Label::new(
+            egui::RichText::new(text)
+                .font(theme::regular(12.5))
+                .color(palette.secondary),
+        )
+        .wrap(),
+    );
+}
+
+/// One kind of skin inside the mini player's section: a title that stands
+/// out, and what belongs to it underneath.
+fn skin_part(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    title: &str,
+    add_contents: impl FnOnce(&mut egui::Ui),
+) {
+    ui.horizontal(|ui| {
+        let (bar, _) = ui.allocate_exact_size(vec2(4.0, 22.0), egui::Sense::hover());
+        ui.painter()
+            .rect_filled(bar, CornerRadius::same(2), palette.accent);
+        theme::text(ui, title, theme::bold(18.0), palette.text);
+    });
+    ui.add_space(6.0);
+    add_contents(ui);
+    ui.add_space(14.0);
+}
+
 fn section(
     ui: &mut egui::Ui,
     palette: &Palette,
@@ -364,6 +397,51 @@ fn local_files_detail(app: &App) -> String {
     }
 }
 
+/// Soloist supplies audio, while this separate Spotify approval supplies
+/// library features. Reuse the existing grant without changing players.
+pub(super) fn spotify_access_control(app: &mut App, ui: &mut egui::Ui) {
+    use crate::backend::LocalPlayback;
+    let locale = app.locale;
+    let palette = app.palette;
+    let (status, busy, action) = match &app.local_playback {
+        LocalPlayback::Ready { .. } => (gettext(locale, "Connected"), false, None),
+        LocalPlayback::Authorizing => (
+            gettext(locale, "Finish authorizing in your browser."),
+            true,
+            None,
+        ),
+        LocalPlayback::Connecting => (gettext(locale, "Connecting to Spotify…"), true, None),
+        LocalPlayback::WaitingForNetwork => (gettext(locale, "Waiting for network…"), true, None),
+        LocalPlayback::Unavailable => ("".into(), false, Some(gettext(locale, "Authorize"))),
+        LocalPlayback::Failed(_) => ("".into(), false, Some(gettext(locale, "Try again"))),
+    };
+    if let Some(action) = action {
+        let mut response = theme::pill_button(ui, &palette, &action, true);
+        if let LocalPlayback::Failed(error) = &app.local_playback {
+            response = response.on_hover_text(error);
+        }
+        if response.clicked() {
+            app.actions.push(Action::EnablePlayback);
+        }
+    } else {
+        ui.horizontal_wrapped(|ui| {
+            if busy {
+                ui.add(egui::Spinner::new().size(14.0).color(palette.secondary));
+            }
+            let galley = crate::bidi::layout(
+                ui.painter(),
+                &status,
+                theme::regular(13.0),
+                palette.secondary,
+                ui.available_width(),
+                usize::MAX,
+                None,
+            );
+            ui.add(egui::Label::new(galley));
+        });
+    }
+}
+
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let palette = app.palette;
     let locale = app.locale;
@@ -400,6 +478,16 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         .unwrap_or(false);
     let mut changed = false;
     let mut any_visible = false;
+    let soloist = gettext(locale, "Spotify Soloist");
+    if row_matches(
+        &needle,
+        &soloist,
+        &gettext(locale, "Playback lossless setup key download updates"),
+    ) {
+        any_visible = true;
+        section(ui, &palette, &soloist, |ui| super::soloist::show(app, ui));
+    }
+
     let open_folder = gettext(locale, "Open folder");
 
     let wanted = app
@@ -458,6 +546,14 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         )
         .when(!in_use && wanted.is_some()),
         RowText::new(sign_out.clone(), account.clone()),
+        RowText::new(
+            gettext(locale, "Spotify access"),
+            gettext(
+                locale,
+                "Made for you, listening activity and Spotify lyrics.",
+            ),
+        )
+        .when(app.settings.soloist_enabled),
     ];
     if section_matches(&needle, &account, &account_rows) {
         any_visible = true;
@@ -577,6 +673,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     }
                 });
             }
+            filtered_row(ui, &palette, &needle, &account, &account_rows[5], |ui| {
+                spotify_access_control(app, ui);
+            });
         });
     }
 
@@ -618,7 +717,14 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             Some(gettext(locale, "Enable playback here")),
         ),
     };
-    let playback = gettext(locale, "Playback on this computer");
+    let built_in = !app.settings.soloist_enabled;
+    let audio_processing = app.audio_processing_available();
+    let visualizers = app.visualizers_available();
+    let playback = if built_in {
+        gettext(locale, "Playback on this computer")
+    } else {
+        gettext(locale, "Application")
+    };
     let normalize_volume = gettext(locale, "Normalize volume");
     let autoplay = gettext(locale, "Autoplay");
     let gapless = gettext(locale, "Gapless playback");
@@ -640,7 +746,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let start_available = app
         .autostart
         .is_some_and(|state| state != fastframe_autostart::State::Unsupported);
-    let playback_rows = [
+    let mut playback_rows = [
         RowText::new(
             // Translators: {status} is a playback state such as Ready or Not set up.
             gettext(locale, "Status: {status}").replace("{status}", &status),
@@ -731,6 +837,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         .when(!cfg!(target_os = "macos")),
         RowText::new(start_with_computer.clone(), start_detail).when(start_available),
     ];
+    for index in [0, 1, 2, 3, 4, 5, 8, 9, 10, 11, 14] {
+        playback_rows[index].available &= built_in;
+    }
     if section_matches(&needle, &playback, &playback_rows) {
         any_visible = true;
         section(ui, &palette, &playback, |ui| {
@@ -1078,9 +1187,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 });
             });
             ui.add_space(4.0);
-            if playback_dirty
-                || playback_rows[10].matches(&needle, &playback)
-                || playback_rows[11].matches(&needle, &playback)
+            if built_in
+                && (playback_dirty
+                    || playback_rows[10].matches(&needle, &playback)
+                    || playback_rows[11].matches(&needle, &playback))
             {
                 ui.horizontal(|ui| {
                     if playback_dirty {
@@ -1136,7 +1246,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         let detail = theme::pair_detail(&app.custom_themes, locale, &app.settings.theme_pair, base);
         RowText::new(title, if detail.is_empty() { usage } else { detail }).when(show_pair)
     };
-    let appearance_rows = [
+    let mut appearance_rows = [
         RowText::new(theme_title.clone(), {
             let detail = theme::catalog_detail(
                 &app.custom_themes,
@@ -1242,6 +1352,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             ),
         ),
     ];
+    for index in [8, 9, 10] {
+        appearance_rows[index].available &= visualizers;
+    }
     if section_matches(&needle, &appearance, &appearance_rows) {
         any_visible = true;
         section(ui, &palette, &appearance, |ui| {
@@ -1732,33 +1845,63 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     }
 
     let skins_folder = app.dirs.skins_dir();
-    app.winamp.refresh_choices(&skins_folder);
-    let skins = gettext(locale, "Winamp skins");
+    app.winamp.poll_choices();
+    app.winamp.refresh_choices(&skins_folder, ui.ctx());
+    let mini_player = gettext(locale, "Mini player");
     let always_on_top = gettext(locale, "Always on top");
-    let show_in_taskbar = gettext(locale, "Show Winamp in taskbar");
-    let skins_rows = [
+    let show_in_taskbar = gettext(locale, "Show the mini player in taskbar");
+    let random_skin = gettext(locale, "Random skin");
+    let winamp_title = gettext(locale, "Winamp");
+    let player_title = gettext(locale, "Windows Media Player");
+    let names_of = |kind: SkinKind| {
+        app.winamp
+            .choices
+            .iter()
+            .filter(|choice| choice.kind == kind)
+            .map(|choice| choice.name.as_str())
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let mini_rows = [
         RowText::new(
-            gettext(locale, "Mini player"),
+            gettext(locale, "Show the mini player"),
             super::keys::platform_shortcut(
                 &gettext(
                     locale,
-                    "Use classic Winamp .wsz skins. Press Ctrl+M or click the skin logo to return. Drop a skin on either window to add it.",
+                    "Use a Winamp or Windows Media Player skin. Press Ctrl+M to return. Drop a skin on either window to add it.",
                 ),
                 &gettext(
                     locale,
-                    "Use classic Winamp .wsz skins. Press Cmd+Shift+M or click the skin logo to return. Drop a skin on either window to add it.",
+                    "Use a Winamp or Windows Media Player skin. Press Cmd+Shift+M to return. Drop a skin on either window to add it.",
                 ),
             )
             .to_owned(),
         ),
         RowText::new(
-            gettext(locale, "Skin"),
-            gettext(
-                locale,
-                // Translators: {folder} is the path of the skins folder.
-                "Installed skins are in {folder}. Find more at the Winamp Skin Museum.",
-            )
-            .replace("{folder}", &skins_folder.display().to_string()),
+            winamp_title.clone(),
+            format!(
+                "{} {}",
+                gettext(
+                    locale,
+                    "Classic .wsz skins. Find more at the Winamp Skin Museum.",
+                ),
+                names_of(SkinKind::Winamp)
+            ),
+        ),
+        RowText::new(
+            player_title.clone(),
+            format!(
+                "{} {}",
+                gettext(
+                    locale,
+                    "Windows Media Player .wmz skins. Drop one on either window to add it.",
+                ),
+                names_of(SkinKind::WindowsMediaPlayer)
+            ),
+        ),
+        RowText::new(
+            random_skin.clone(),
+            gettext(locale, "Pick another skin each time the mini player opens."),
         ),
         RowText::new(
             gettext(locale, "Size"),
@@ -1767,7 +1910,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         RowText::new(
             always_on_top.clone(),
             if app.window_level_supported {
-                gettext(locale, "Keep the Winamp window above everything else.")
+                gettext(locale, "Keep the mini player above everything else.")
             } else {
                 crate::window::on_top_unavailable(locale)
             },
@@ -1780,107 +1923,150 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             ),
         )
         .when(app.taskbar_setting_visible()),
-        RowText::new(
-            gettext(locale, "Installed skins"),
-            app.winamp
-                .choices
-                .iter()
-                .map(|choice| choice.name.as_str())
-                .collect::<Vec<_>>()
-                .join(" "),
-        ),
     ];
-    if section_matches(&needle, &skins, &skins_rows) {
+    if section_matches(&needle, &mini_player, &mini_rows) {
         any_visible = true;
-        section(ui, &palette, &skins, |ui| {
-            filtered_row(ui, &palette, &needle, &skins, &skins_rows[0], |ui| {
+        section(ui, &palette, &mini_player, |ui| {
+            filtered_row(ui, &palette, &needle, &mini_player, &mini_rows[0], |ui| {
                 if theme::pill_button(ui, &palette, &gettext(locale, "Switch to it"), true)
                     .clicked()
                 {
                     app.actions.push(Action::ToggleWinampWindow);
                 }
             });
-            filtered_row(ui, &palette, &needle, &skins, &skins_rows[1], |ui| {
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 6.0;
-                    if theme::soft_button(
+            let choices = app.winamp.choices.clone();
+            let showing = app
+                .settings
+                .skin
+                .as_deref()
+                .and_then(|name| choices.iter().position(|choice| choice.name == name));
+            if mini_rows[1].matches(&needle, &mini_player) {
+                skin_part(ui, &palette, &winamp_title, |ui| {
+                    skin_note(
                         ui,
                         &palette,
-                        Some(Icon::Globe),
-                        &gettext(locale, "Skin Museum"),
-                        false,
-                    )
-                    .clicked()
-                    {
-                        app.actions
-                            .push(Action::OpenUrl("https://skins.webamp.org/".into()));
-                    }
-                    if theme::soft_button(
-                        ui,
-                        &palette,
-                        Some(Icon::ExternalLink),
-                        &open_folder,
-                        false,
-                    )
-                    .clicked()
-                    {
-                        app.actions.push(Action::OpenSkinsFolder);
+                        &gettext(
+                            locale,
+                            "Classic .wsz skins. Find more at the Winamp Skin Museum.",
+                        ),
+                    );
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        if theme::soft_button(
+                            ui,
+                            &palette,
+                            Some(Icon::Globe),
+                            &gettext(locale, "Skin Museum"),
+                            false,
+                        )
+                        .clicked()
+                        {
+                            app.actions
+                                .push(Action::OpenUrl("https://skins.webamp.org/".into()));
+                        }
+                        if theme::soft_button(
+                            ui,
+                            &palette,
+                            Some(Icon::ExternalLink),
+                            &open_folder,
+                            false,
+                        )
+                        .clicked()
+                        {
+                            app.actions.push(Action::OpenSkinsFolder);
+                        }
+                    });
+                    ui.add_space(6.0);
+                    let mut options: Vec<(usize, &str)> = vec![(0, "Spotifast")];
+                    options.extend(
+                        choices
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, choice)| choice.kind == SkinKind::Winamp)
+                            .map(|(index, choice)| (index + 1, choice.label())),
+                    );
+                    let current = showing
+                        .filter(|index| choices[*index].kind == SkinKind::Winamp)
+                        .map_or(0, |index| index + 1);
+                    // With a Windows Media Player skin on, nothing here is.
+                    let current = if showing.is_some() && current == 0 {
+                        usize::MAX
+                    } else {
+                        current
+                    };
+                    if let Some(picked) = widgets::chips(ui, &palette, &options, current) {
+                        app.actions.push(Action::SetSkin(
+                            picked
+                                .checked_sub(1)
+                                .map(|index| choices[index].name.clone()),
+                        ));
                     }
                 });
-            });
-            let choices = app.winamp.choices.clone();
-            if skins_rows[1].matches(&needle, &skins) || skins_rows[5].matches(&needle, &skins) {
-                // Random comes first; it picks among the others each time
-                // the mini player opens.
-                const RANDOM: usize = usize::MAX;
-                let random = gettext(locale, "Random");
-                let mut options: Vec<(usize, &str)> = vec![(RANDOM, &random), (0, "Spotifast")];
-                options.extend(
-                    choices
-                        .iter()
-                        .enumerate()
-                        .map(|(index, choice)| (index + 1, choice.label())),
-                );
-                let showing = app
-                    .settings
-                    .skin
-                    .as_deref()
-                    .and_then(|name| choices.iter().position(|choice| choice.name == name))
-                    .map_or(0, |index| index + 1);
-                let current = if app.settings.random_skin {
-                    RANDOM
-                } else {
-                    showing
-                };
-                if let Some(picked) = widgets::chips(ui, &palette, &options, current)
-                    && picked != current
-                {
-                    if picked == RANDOM {
-                        app.actions.push(Action::SetRandomSkin(true));
-                    } else {
-                        let name = picked
-                            .checked_sub(1)
-                            .map(|index| choices[index].name.clone());
-                        app.actions.push(Action::SetSkin(name));
-                    }
-                }
-                if app.settings.random_skin {
-                    let label = options
-                        .iter()
-                        .find(|(value, _)| *value == showing)
-                        .map_or("Spotifast", |(_, label)| label);
-                    theme::subtle(
+            }
+            if mini_rows[2].matches(&needle, &mini_player) {
+                skin_part(ui, &palette, &player_title, |ui| {
+                    skin_note(
                         ui,
                         &palette,
-                        &gettext(locale, "Now showing {skin}. Another one is picked each time the mini player opens.")
-                            .replace("{skin}", label),
+                        &gettext(
+                            locale,
+                            "Windows Media Player .wmz skins. Drop one on either window to add it.",
+                        ),
                     );
-                }
-                ui.add_space(4.0);
+                    let options: Vec<(usize, &str)> = choices
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, choice)| choice.kind == SkinKind::WindowsMediaPlayer)
+                        .map(|(index, choice)| (index, choice.label()))
+                        .collect();
+                    ui.add_space(6.0);
+                    if options.is_empty() {
+                        skin_note(
+                            ui,
+                            &palette,
+                            &gettext(
+                                locale,
+                                "Installed skins are in {folder}. None of this kind yet.",
+                            )
+                            .replace("{folder}", &skins_folder.display().to_string()),
+                        );
+                    } else {
+                        let current = showing
+                            .filter(|index| choices[*index].kind == SkinKind::WindowsMediaPlayer)
+                            .unwrap_or(usize::MAX);
+                        if let Some(picked) = widgets::chips(ui, &palette, &options, current) {
+                            app.actions
+                                .push(Action::SetSkin(Some(choices[picked].name.clone())));
+                        }
+                    }
+                    if showing
+                        .is_some_and(|index| choices[index].kind == SkinKind::WindowsMediaPlayer)
+                    {
+                        ui.add_space(6.0);
+                        skin_note(
+                            ui,
+                            &palette,
+                            &gettext(
+                                locale,
+                                "This skin has no equalizer or playlist window, and its scripts do not run.",
+                            ),
+                        );
+                    }
+                });
             }
-            filtered_row(ui, &palette, &needle, &skins, &skins_rows[2], |ui| {
-                let scale =
-                    crate::winamp::WinampState::scale(&app.settings, ui.ctx().pixels_per_point());
+            filtered_row(ui, &palette, &needle, &mini_player, &mini_rows[3], |ui| {
+                let mut random = app.settings.random_skin;
+                if widgets::switch(ui, &palette, &random_skin, &mut random).changed() {
+                    app.actions.push(Action::SetRandomSkin(random));
+                }
+            });
+            filtered_row(ui, &palette, &needle, &mini_player, &mini_rows[4], |ui| {
+                let scale = crate::winamp::WinampState::scale(
+                    &app.settings,
+                    ui.ctx().pixels_per_point(),
+                    &app.winamp.skin,
+                );
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;
                     for candidate in 1..=crate::winamp::MAX_SCALE {
@@ -1894,7 +2080,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     }
                 });
             });
-            filtered_row(ui, &palette, &needle, &skins, &skins_rows[3], |ui| {
+            filtered_row(ui, &palette, &needle, &mini_player, &mini_rows[5], |ui| {
                 ui.add_enabled_ui(app.window_level_supported, |ui| {
                     let mut on_top = app.settings.winamp_on_top && app.window_level_supported;
                     if widgets::switch(ui, &palette, &always_on_top, &mut on_top).changed() {
@@ -1903,7 +2089,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 });
             });
             if app.taskbar_setting_visible() {
-                filtered_row(ui, &palette, &needle, &skins, &skins_rows[4], |ui| {
+                filtered_row(ui, &palette, &needle, &mini_player, &mini_rows[6], |ui| {
                     let mut visible = app.settings.winamp_show_taskbar;
                     let response = widgets::switch(ui, &palette, &show_in_taskbar, &mut visible);
                     if response.changed() {
@@ -2015,7 +2201,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 .join(" "),
         ),
     ];
-    if section_matches(&needle, "MilkDrop", &milkdrop_rows) {
+    if visualizers && section_matches(&needle, "MilkDrop", &milkdrop_rows) {
         any_visible = true;
         section(ui, &palette, "MilkDrop", |ui| {
             filtered_row(ui, &palette, &needle, "MilkDrop", &milkdrop_rows[0], |ui| {
@@ -2148,7 +2334,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 .join(" "),
         ),
     ];
-    if section_matches(&needle, &equalizer, &equalizer_rows) {
+    if audio_processing && section_matches(&needle, &equalizer, &equalizer_rows) {
         any_visible = true;
         section(ui, &palette, &equalizer, |ui| {
             filtered_row(
@@ -2229,7 +2415,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     }
 
     let storage = gettext(locale, "Storage");
-    let storage_rows = [
+    let mut storage_rows = [
         RowText::new(
             gettext(locale, "Artwork cache"),
             // Translators: {folder} is the path of a cache folder.
@@ -2243,7 +2429,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 "{folder}",
                 &app.dirs.audio_cache_dir().display().to_string(),
             ),
-        ),
+        )
+        .when(built_in),
         RowText::new(
             gettext(locale, "Play history"),
             gettext(
@@ -2263,6 +2450,15 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     ];
     if section_matches(&needle, &storage, &storage_rows) {
         any_visible = true;
+        app.storage_usage.update(&app.dirs, ui.ctx());
+        for (row, size) in storage_rows.iter_mut().zip(app.storage_usage.sizes) {
+            let size = match size {
+                crate::storage::Size::Checking => gettext(locale, "Checking…").into_owned(),
+                crate::storage::Size::Bytes(bytes) => crate::storage::format_bytes(bytes),
+                crate::storage::Size::Unavailable => gettext(locale, "Unavailable").into_owned(),
+            };
+            row.title = format!("{} · {size}", row.title).into();
+        }
         section(ui, &palette, &storage, |ui| {
             filtered_row(ui, &palette, &needle, &storage, &storage_rows[0], |ui| {
                 if theme::soft_button(
@@ -2277,7 +2473,22 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     app.actions.push(Action::ClearArtCache);
                 }
             });
-            filtered_row(ui, &palette, &needle, &storage, &storage_rows[1], |_| {});
+            filtered_row(ui, &palette, &needle, &storage, &storage_rows[1], |ui| {
+                let label = if app.clearing_audio_cache {
+                    gettext(locale, "Clearing…")
+                } else {
+                    gettext(locale, "Clear audio")
+                };
+                if ui
+                    .add_enabled_ui(!app.clearing_audio_cache, |ui| {
+                        theme::soft_button(ui, &palette, Some(Icon::Trash), &label, false)
+                    })
+                    .inner
+                    .clicked()
+                {
+                    app.actions.push(Action::ClearAudioCache);
+                }
+            });
             filtered_row(ui, &palette, &needle, &storage, &storage_rows[2], |ui| {
                 if theme::soft_button(
                     ui,

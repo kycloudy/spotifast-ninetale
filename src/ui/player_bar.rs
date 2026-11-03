@@ -108,7 +108,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             // Its empty space is the visualizer's control, as Winamp's
             // visualizer was: a click moves to the next mode. The controls
             // drawn after it take their own clicks.
-            if app.settings.player_bar_vis_click {
+            if app.settings.player_bar_vis_click && app.visualizers_available() {
                 let empty = ui.interact(
                     behind,
                     ui.id().with("player-bar-visualizer"),
@@ -173,7 +173,7 @@ fn visualizer(app: &mut App, ui: &egui::Ui, rect: Rect, now: Option<&NowPlaying>
     use crate::settings::PlayerBarVis;
     use crate::vis;
     let mode = app.settings.player_bar_vis;
-    let sounding = now.is_some_and(|now| (now.playing || now.loading) && now.local);
+    let sounding = app.visualizer_sounding(now);
     let dark = ui.visuals().dark_mode;
     let colours = vis_colours(app.now_playing_palette(), app.palette.accent, dark);
     // Over a light bar the same colour paints more strongly, or white
@@ -187,7 +187,9 @@ fn visualizer(app: &mut App, ui: &egui::Ui, rect: Rect, now: Option<&NowPlaying>
                 return false;
             }
             let samples = if sounding {
-                app.winamp.tap.window(vis::WIDE_SAMPLES, vis::LAG)
+                app.winamp
+                    .tap
+                    .window(vis::WIDE_SAMPLES, app.visualizer_lag())
             } else {
                 Vec::new()
             };
@@ -204,7 +206,10 @@ fn visualizer(app: &mut App, ui: &egui::Ui, rect: Rect, now: Option<&NowPlaying>
             }
             // Winamp's scope with a column every eight points or so.
             let count = (rect.width() / 8.0).clamp(75.0, 320.0) as usize;
-            let samples = app.winamp.tap.window(count * vis::SCOPE_STEP, vis::LAG);
+            let samples = app
+                .winamp
+                .tap
+                .window(count * vis::SCOPE_STEP, app.visualizer_lag());
             waveform(
                 &painter,
                 rect,
@@ -810,10 +815,14 @@ fn transport(app: &mut App, ui: &mut egui::Ui, now: Option<&NowPlaying>, region:
 
     let disc = slot(widths[2]);
     if loading || app.any_play_pending() {
-        ui.painter()
-            .circle_filled(disc.center(), 18.0, palette.text);
         let mut cell = centered(ui, disc);
-        theme::spinner(&mut cell, 22.0, palette.window);
+        theme::circle_spinner(
+            &mut cell,
+            36.0,
+            palette.text,
+            palette.window,
+            &gettext(app.locale, "Loading…"),
+        );
     } else {
         let icon = if playing {
             Icon::PauseFilled
@@ -965,7 +974,8 @@ fn device_chip(
 ) -> egui::Response {
     let palette = app.palette;
     let locale = app.locale;
-    let remote = now.filter(|now| !now.local);
+    // A Soloist this app runs plays here, so it counts as this computer.
+    let remote = now.filter(|now| !now.local && !app.targets_own_soloist());
     let label = remote.filter(|_| !narrow).map(|now| {
         now.device_name
             .clone()
@@ -989,13 +999,16 @@ fn device_chip(
     let width = galley.as_ref().map_or(30.0, |galley| {
         8.0 + 14.0 + 6.0 + galley.size().x + 4.0 + 11.0 + 8.0
     });
+    // Screen readers hear what the tooltip says: the device playing, or
+    // the chip's action.
+    let tooltip = match remote.and_then(|now| now.device_name.as_deref()) {
+        // Translators: {device} is the name of the device playing the music.
+        Some(device) => gettext(locale, "Playing on {device}").replace("{device}", device),
+        None => gettext(locale, "Connect to a device").into_owned(),
+    };
     let (rect, response) = ui.allocate_exact_size(vec2(width, 28.0), Sense::click());
     response.widget_info(|| {
-        egui::WidgetInfo::labeled(
-            egui::WidgetType::Button,
-            ui.is_enabled(),
-            gettext(locale, "Connect to a device"),
-        )
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), &tooltip)
     });
     if ui.is_rect_visible(rect) {
         if response.hovered() {
@@ -1031,11 +1044,6 @@ fn device_chip(
         }
     }
     theme::focus_ring(ui, &response);
-    let tooltip = match remote.and_then(|now| now.device_name.as_deref()) {
-        // Translators: {device} is the name of the device playing the music.
-        Some(device) => gettext(locale, "Playing on {device}").replace("{device}", device),
-        None => gettext(locale, "Connect to a device").into_owned(),
-    };
     response.on_hover_text(tooltip)
 }
 
@@ -1058,7 +1066,7 @@ fn extras(
     // Some remote devices, such as a phone playing over Bluetooth, refuse
     // volume changes from other apps: show their volume but don't offer to
     // change it.
-    let adjustable = now.is_none_or(|now| now.can_set_volume);
+    let adjustable = !app.soloist_waiting() && now.is_none_or(|now| now.can_set_volume);
     let controls = ui.add_enabled_ui(adjustable, |ui| {
         match thin_slider(
             ui,
@@ -1071,11 +1079,8 @@ fn extras(
         ) {
             SliderEvent::Dragging(value) => {
                 app.volume_preview = Some(value);
-                // Local volume is cheap to apply continuously; remote goes on release.
-                if now.is_none_or(|now| now.local) {
-                    app.actions
-                        .push(Action::PreviewVolume((value * 100.0).round() as u8));
-                }
+                app.actions
+                    .push(Action::PreviewVolume((value * 100.0).round() as u8));
             }
             SliderEvent::Committed(value) => {
                 app.volume_preview = None;
