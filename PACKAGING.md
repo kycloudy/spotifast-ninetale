@@ -30,7 +30,7 @@ Linux desktop assets beside its binaries and packages the signed macOS
 desktop hooks.
 
 ```sh
-gem install native-packages --version 0.10.0
+gem install native-packages --version 0.11.0
 native-packages validate
 native-packages doctor --target linux-amd64 --target linux-arm64
 native-packages build --release v1.2.3 --target linux-amd64 --target linux-arm64
@@ -103,7 +103,7 @@ Homebrew automation needs `PUBLISH_HOMEBREW=true` and
 The macOS and Windows targets and the Flatpak build step remain responsible
 for their native artifacts. Additional nFPM formats require suitable platform
 inputs and dependencies; adding a format does not port the application.
-See the [shared CLI documentation](https://github.com/crmne/native-packages/tree/v0.10.0)
+See the [shared CLI documentation](https://github.com/crmne/native-packages/tree/v0.11.0)
 for commands and supported formats.
 
 The manual **Flatpak from release** workflow can rebuild a missing Flatpak from
@@ -144,7 +144,7 @@ secrets, which the job exposes as environment variables:
 A complete set enables notarization automatically. An incomplete set fails;
 no values retain local builds without Developer ID signing. Application inputs
 and the user's normal keychains remain unchanged. See the shared
-[Apple setup and phase contract](https://github.com/crmne/native-packages/blob/v0.10.0/docs/apple-notarization.md).
+[Apple setup and phase contract](https://github.com/crmne/native-packages/blob/v0.11.0/docs/apple-notarization.md).
 
 After preparing `dist/macos-input` on a Mac, test packaging without publishing:
 
@@ -156,6 +156,18 @@ native-packages build \
 Secret configuration applies to future builds. Existing published DMGs retain
 their original signatures; this setup does not replace release assets.
 
+## Windows signing
+
+Spotifast Ninetale does not sign its Windows code. Upstream Spotifast signs
+`spotifast.exe` and its MSI with Azure Artifact Signing under its own
+publisher identity, which this repository cannot use, so the release workflow
+and `native-packages.yaml` leave that step out. Windows SmartScreen can warn
+before the first run of an unsigned download.
+
+Updates stay safe without code signing: the updater checks
+`checksums.txt.sig` (see "Update signing key" below) before it installs a
+release.
+
 ## Windows Installer package
 
 Each Windows release job builds the Inno Setup program
@@ -164,15 +176,14 @@ same binary. The package comes from `packaging/windows/spotifast.wxs` (WiX
 Toolset 5): native-packages selects `windows-amd64` or `windows-arm64` with
 `--defer-recipes` and runs `packaging/windows/build-msi.py`. That script
 compiles the package's custom actions (`running-copy.c`,
-`update-leftovers.c`) with the job's MSVC tools, refuses an executable whose
+`update-leftovers.c`) with the job's MSVC tools (cross-compiled for arm64), refuses an executable whose
 version resource does not carry the release version, and runs WiX with
 `-pdbtype none`, so the package is the only output.
 
-Windows installs move to the package over two releases. The next release
-ships both `-setup.exe` and `.msi`: earlier versions only know the setup
-program and update through it, and that release's updater prefers the package.
-Later releases can drop the setup program, `spotifast.iss` and
-`test-uninstall.py`.
+Spotifast Ninetale releases ship both `-setup.exe` and `.msi`. The updater
+prefers the package, and the package takes over a copy the setup program
+installed. Upstream releases after 0.14.2 ship only the package; Ninetale keeps
+the setup program so that nothing changes for people who install with it.
 
 The updater (fastframe-update) runs `msiexec /i PACKAGE /qn /norestart /l*v LOG
 INSTALLFOLDER="<the app's folder>"` and accepts exit codes 0 and 3010. The package:

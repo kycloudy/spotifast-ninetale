@@ -187,7 +187,7 @@ fn nav_button(
         }
         let color = if !enabled {
             palette.dim
-        } else if response.hovered() {
+        } else if response.hovered() || response.has_focus() {
             palette.text
         } else {
             palette.secondary
@@ -437,6 +437,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             let badges =
                 |labels: bool| badge_width(update_galley.as_ref(), UPDATE_BADGE_PADDING, labels);
             let controls = RIGHT_CONTROLS_WIDTH
+                - if !app.visualizers_available() {
+                    ICON_BUTTON_SIZE + ITEM_SPACING
+                } else {
+                    0.0
+                }
                 + if !app.network_reachable {
                     ICON_BUTTON_SIZE + 4.0
                 } else {
@@ -485,8 +490,20 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     .unwrap_or_default();
                 let (rect, response) =
                     ui.allocate_exact_size(Vec2::splat(AVATAR_SIZE), Sense::click());
+                let account_label = if name.is_empty() {
+                    gettext(locale, "Account")
+                } else {
+                    name.as_str().into()
+                };
+                response.widget_info(|| {
+                    egui::WidgetInfo::labeled(
+                        egui::WidgetType::Button,
+                        ui.is_enabled(),
+                        &account_label,
+                    )
+                });
                 if ui.is_rect_visible(rect) {
-                    let fill = if response.hovered() {
+                    let fill = if response.hovered() || response.has_focus() {
                         palette.surface_hover
                     } else {
                         palette.surface
@@ -523,6 +540,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                         }
                     }
                 }
+                theme::focus_ring(ui, &response);
                 let response = response.on_hover_text(&name);
                 egui::Popup::menu(&response)
                     .frame(super::widgets::menu_frame(&palette))
@@ -621,22 +639,23 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 {
                     app.actions.push(Action::Open(Page::Settings));
                 }
-                if theme::icon_button(
-                    ui,
-                    Icon::AudioLines,
-                    ICON_BUTTON_ICON,
-                    if app.settings.milkdrop_open {
-                        palette.accent
-                    } else {
-                        palette.secondary
-                    },
-                    palette.text,
-                    super::keys::platform_shortcut(
-                        &gettext(locale, "MilkDrop visualiser (Ctrl+Shift+K)"),
-                        &gettext(locale, "MilkDrop visualiser (Cmd+Shift+K)"),
-                    ),
-                )
-                .clicked()
+                if app.visualizers_available()
+                    && theme::icon_button(
+                        ui,
+                        Icon::AudioLines,
+                        ICON_BUTTON_ICON,
+                        if app.settings.milkdrop_open {
+                            palette.accent
+                        } else {
+                            palette.secondary
+                        },
+                        palette.text,
+                        super::keys::platform_shortcut(
+                            &gettext(locale, "MilkDrop visualiser (Ctrl+Shift+K)"),
+                            &gettext(locale, "MilkDrop visualiser (Cmd+Shift+K)"),
+                        ),
+                    )
+                    .clicked()
                 {
                     app.actions.push(Action::ToggleWinampMilkdrop);
                 }
