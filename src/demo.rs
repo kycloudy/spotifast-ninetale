@@ -9113,7 +9113,8 @@ mod tests {
         accessible_node(&tree, "Spotifast Soloist (12345678)", Role::Button);
         assert!(!tree.nodes.iter().any(|(_, n)| n.label().is_some_and(|s| {
             s.starts_with("Playing on") || s == "Spotifast (this computer)" || s == "Audio output"
-        })));
+        })
+            || n.value().is_some_and(|s| s.starts_with("Playing on"))));
         assert!(app.targets_own_soloist());
         assert!(
             matches!(app.target(), crate::app::Target::Remote(Some(id)) if id == "demo-soloist")
@@ -9133,11 +9134,13 @@ mod tests {
         accessible_frame(&ctx, &mut app, vec![]);
         let tree = accessible_frame(&ctx, &mut app, vec![]);
         assert!(!app.targets_own_soloist());
-        accessible_node(
-            &tree,
-            "Playing on Spotifast Soloist (12345678)",
-            Role::Button,
-        );
+        // Ninetale names the playing device on the player bar's device
+        // chip, not in a top bar badge.
+        assert!(tree.nodes.iter().any(|(_, n)| {
+            n.role() == Role::Button
+                && n.label() == Some("Connect to a device")
+                && n.value() == Some("Playing on Spotifast Soloist (12345678)")
+        }));
 
         app.apply(Action::SetSoloist(false), &ctx);
         accessible_frame(&ctx, &mut app, vec![]);

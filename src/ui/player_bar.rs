@@ -999,16 +999,21 @@ fn device_chip(
     let width = galley.as_ref().map_or(30.0, |galley| {
         8.0 + 14.0 + 6.0 + galley.size().x + 4.0 + 11.0 + 8.0
     });
-    // Screen readers hear what the tooltip says: the device playing, or
-    // the chip's action.
-    let tooltip = match remote.and_then(|now| now.device_name.as_deref()) {
-        // Translators: {device} is the name of the device playing the music.
-        Some(device) => gettext(locale, "Playing on {device}").replace("{device}", device),
-        None => gettext(locale, "Connect to a device").into_owned(),
-    };
+    // Translators: {device} is the name of the device playing the music.
+    let playing_on = remote
+        .and_then(|now| now.device_name.as_deref())
+        .map(|device| gettext(locale, "Playing on {device}").replace("{device}", device));
     let (rect, response) = ui.allocate_exact_size(vec2(width, 28.0), Sense::click());
+    // Screen readers hear the chip's action as its name and the device
+    // playing, if another one is, as its value.
     response.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), &tooltip)
+        let mut info = egui::WidgetInfo::labeled(
+            egui::WidgetType::Button,
+            ui.is_enabled(),
+            gettext(locale, "Connect to a device"),
+        );
+        info.current_text_value = playing_on.clone();
+        info
     });
     if ui.is_rect_visible(rect) {
         if response.hovered() {
@@ -1044,7 +1049,9 @@ fn device_chip(
         }
     }
     theme::focus_ring(ui, &response);
-    response.on_hover_text(tooltip)
+    response.on_hover_text(
+        playing_on.unwrap_or_else(|| gettext(locale, "Connect to a device").into_owned()),
+    )
 }
 
 fn extras(
