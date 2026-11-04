@@ -926,12 +926,18 @@ pub enum DiscographyFilter {
     All,
     Albums,
     Singles,
+    Compilations,
     AppearsOn,
 }
 
 impl DiscographyFilter {
-    pub const ALL: [DiscographyFilter; 4] =
-        [Self::All, Self::Albums, Self::Singles, Self::AppearsOn];
+    pub const ALL: [DiscographyFilter; 5] = [
+        Self::All,
+        Self::Albums,
+        Self::Singles,
+        Self::Compilations,
+        Self::AppearsOn,
+    ];
 
     pub fn label(self, locale: crate::i18n::Locale) -> std::borrow::Cow<'static, str> {
         use crate::i18n::{gettext, pgettext};
@@ -939,6 +945,7 @@ impl DiscographyFilter {
             Self::All => pgettext(locale, "filter", "All"),
             Self::Albums => gettext(locale, "Albums"),
             Self::Singles => gettext(locale, "Singles & EPs"),
+            Self::Compilations => gettext(locale, "Compilations"),
             Self::AppearsOn => gettext(locale, "Appears On"),
         }
     }
@@ -948,6 +955,7 @@ impl DiscographyFilter {
             Self::All => "album,single,compilation",
             Self::Albums => "album",
             Self::Singles => "single",
+            Self::Compilations => "compilation",
             Self::AppearsOn => "appears_on",
         }
     }
@@ -1400,6 +1408,8 @@ pub enum Action {
     SetSoloist(bool),
     RetrySoloist,
     StartSoloistSetup,
+    EnableSoloist,
+    LeaveSoloistSetup,
     FinishSoloistSetup,
     UseBuiltInPlayer,
     RestartEngine,
@@ -1416,6 +1426,12 @@ pub enum Action {
     ClearPlayHistory,
     /// Open or close the Winamp window.
     ToggleWinampWindow,
+    /// The pointer or a key on a view of a Windows Media Player skin.
+    WmpInput {
+        view: u32,
+        input: crate::skin::wmp::runtime::Input,
+        modifiers: crate::skin::wmp::runtime::Modifiers,
+    },
     /// Select a skin, or the built-in skin for `None`.
     SetSkin(Option<String>),
     /// Install and select a skin file.
@@ -1473,6 +1489,18 @@ pub enum Action {
     ToggleWinampShade,
     /// Open or close the MilkDrop window.
     ToggleWinampMilkdrop,
+    /// Move the MilkDrop picture in the skinned window on or back a preset.
+    MilkdropEffect(i32),
+    /// Take the skinned MilkDrop window to full screen, in the plain window.
+    MilkdropFullscreen,
+    /// MilkDrop alone in the window, from full screen lyrics.
+    EnterImmersive,
+    /// Full screen lyrics back as they were.
+    LeaveImmersive,
+    /// Puts MilkDrop behind full screen lyrics, or the cover's art back.
+    ToggleLyricsMilkdrop,
+    /// The size of the picture in the skinned MilkDrop window, in points.
+    SetMilkdropPanel(u32),
     /// How long each MilkDrop preset plays, in seconds.
     SetMilkdropSeconds(u32),
     SetMilkdropScale(u32),
