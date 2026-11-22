@@ -27694,7 +27694,10 @@ mod tests {
         app.follows_reachability = true;
         app.update = Some(crate::updates::Release {
             // The same major version as this build, so it installs on its own.
-            version: format!("{}.999.0", crate::updates::VERSION.split('.').next().unwrap()),
+            version: format!(
+                "{}.999.0",
+                crate::updates::VERSION.split('.').next().unwrap()
+            ),
             url: "https://example.invalid/release".into(),
         });
         change_power(&app, |conditions| conditions.metered = true);
@@ -27800,7 +27803,10 @@ mod tests {
         app.settings.check_for_updates = false;
         app.update = Some(crate::updates::Release {
             // The same major version as this build, so it installs on its own.
-            version: format!("{}.999.0", crate::updates::VERSION.split('.').next().unwrap()),
+            version: format!(
+                "{}.999.0",
+                crate::updates::VERSION.split('.').next().unwrap()
+            ),
             url: "https://example.invalid/release".into(),
         });
         change_power(&app, |conditions| conditions.metered = true);
