@@ -27693,7 +27693,8 @@ mod tests {
         // Where the app follows the system's word on reaching the internet.
         app.follows_reachability = true;
         app.update = Some(crate::updates::Release {
-            version: "0.999.0".into(),
+            // The same major version as this build, so it installs on its own.
+            version: format!("{}.999.0", crate::updates::VERSION.split('.').next().unwrap()),
             url: "https://example.invalid/release".into(),
         });
         change_power(&app, |conditions| conditions.metered = true);
@@ -27798,7 +27799,8 @@ mod tests {
         app.settings.update_automatically = true;
         app.settings.check_for_updates = false;
         app.update = Some(crate::updates::Release {
-            version: "0.999.0".into(),
+            // The same major version as this build, so it installs on its own.
+            version: format!("{}.999.0", crate::updates::VERSION.split('.').next().unwrap()),
             url: "https://example.invalid/release".into(),
         });
         change_power(&app, |conditions| conditions.metered = true);
